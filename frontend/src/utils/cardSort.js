@@ -81,11 +81,34 @@ export const LANGUAGE_ORDER = cardOrder.language;
 // sort chronologically, matching the backend's placement engine — without it
 // the display order would disagree with where recommendSlot files cards.
 export function sortCardsByOrder(cards, sortOrder, foilSorting, setsList = []) {
+  // Looked up once per set, not once per comparison: a Magic sets list runs to
+  // well over a thousand entries, and a linear scan inside the comparator made
+  // a set sort of a few thousand cards take a quarter of a second.
+  // First occurrence wins, as findIndex did.
+  let setIndex = null;
   const setRank = (name) => {
     if (!setsList || setsList.length === 0) return 0;
-    const idx = setsList.findIndex(s => s.name === name);
-    return idx >= 0 ? idx : 999999;
+    if (!setIndex) {
+      setIndex = new Map();
+      setsList.forEach((s, i) => { if (!setIndex.has(s.name)) setIndex.set(s.name, i); });
+    }
+    const idx = setIndex.get(name);
+    return idx === undefined ? 999999 : idx;
   };
+  // Per-card keys that take parsing to derive (dates, type lines, colour
+  // identities) are computed once per card for this sort, since the comparator
+  // sees each card about log2(n) times.
+  const perCard = (fn) => {
+    const memo = new Map();
+    return (card) => {
+      let v = memo.get(card);
+      if (v === undefined) { v = fn(card); memo.set(card, v); }
+      return v;
+    };
+  };
+  const addedTime = perCard(card => (card.added_at ? new Date(card.added_at).getTime() : 0));
+  const typeRankOf = perCard(typeRank);
+  const colorOf = perCard(colorCategory);
   let criteria = [];
   if (typeof sortOrder === 'string') {
     if (sortOrder.startsWith('[')) {
@@ -108,9 +131,7 @@ export function sortCardsByOrder(cards, sortOrder, foilSorting, setsList = []) {
           cmp = (a.favorite ? 1 : 0) - (b.favorite ? 1 : 0);
           break;
         case 'added_at': {
-          const timeA = a.added_at ? new Date(a.added_at).getTime() : 0;
-          const timeB = b.added_at ? new Date(b.added_at).getTime() : 0;
-          cmp = timeA - timeB;
+          cmp = addedTime(a) - addedTime(b);
           break;
         }
         case 'entry_id':
@@ -145,7 +166,7 @@ export function sortCardsByOrder(cards, sortOrder, foilSorting, setsList = []) {
           break;
         }
         case 'type':
-          cmp = typeRank(a) - typeRank(b);
+          cmp = typeRankOf(a) - typeRankOf(b);
           break;
         case 'language': {
           const la = LANGUAGE_ORDER[a.language] || 99;
@@ -160,8 +181,8 @@ export function sortCardsByOrder(cards, sortOrder, foilSorting, setsList = []) {
         case 'color': {
           // Bucketed the way the backend files (a Boros card is Multicolor, not
           // Red); this used to take the first colour of the identity.
-          const cA = colorCategory(a);
-          const cB = colorCategory(b);
+          const cA = colorOf(a);
+          const cB = colorOf(b);
           cmp = (cardOrder.wubrg[cA] || 99) - (cardOrder.wubrg[cB] || 99);
           if (cmp === 0) cmp = cA.localeCompare(cB);
           break;

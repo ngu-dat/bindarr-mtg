@@ -29,6 +29,8 @@ const VirtualGrid = forwardRef(function VirtualGrid(
 ) {
   const elRef = useRef(null);
   const [metrics, setMetrics] = useState({ cols: 1, stride: 0 });
+  const metricsRef = useRef(metrics);
+  const burstRef = useRef({ since: 0, count: 0 });
   const [view, setView] = useState({ top: 0, bottom: typeof window !== 'undefined' ? window.innerHeight : 800 });
   const count = items.length;
   const range = windowRange({ count, cols: metrics.cols, stride: metrics.stride, viewTop: view.top, viewBottom: view.bottom, overscanRows });
@@ -63,7 +65,18 @@ const VirtualGrid = forwardRef(function VirtualGrid(
     for (let i = 0; i < kids.length; i += cols) tops.push(kids[i].getBoundingClientRect().top);
     const rowGap = parseFloat(cs.rowGap) || 0;
     const stride = measureStride(tops, kids[0] ? kids[0].getBoundingClientRect().height : 0, rowGap);
-    setMetrics(prev => (prev.cols === cols && Math.abs(prev.stride - stride) < 0.5 ? prev : { cols, stride }));
+    const same = metricsRef.current.cols === cols && Math.abs(metricsRef.current.stride - stride) < 0.5;
+    if (same) return;
+    // Tiles of differing heights make the stride depend on which rows are
+    // mounted: a new stride mounts other rows, which measure differently, and
+    // the commits never settle (React error #185). Tiles are meant to be one
+    // fixed height; if they are not, keep the last stride rather than loop.
+    const now = performance.now();
+    const burst = burstRef.current;
+    if (now - burst.since > 200) { burst.since = now; burst.count = 0; }
+    if (++burst.count > 6) return;
+    metricsRef.current = { cols, stride };
+    setMetrics(metricsRef.current);
   }, []);
 
   // After every commit: the mounted rows may have changed size or columns.

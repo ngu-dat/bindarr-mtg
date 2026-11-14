@@ -15,7 +15,7 @@ import ScryfallSyntaxHelp from './ScryfallSyntaxHelp';
 import { useMultiSelect } from '../utils/useMultiSelect';
 import { undoToast } from '../utils/undo';
 import { duplicateRowFilter, stackCollectionRows } from '../utils/stackTiles';
-import { defaultGameFilter, gameOptions, isGameEnabled, showGamePicker } from '../utils/games';
+import { defaultGameFilter, enabledGames, gameOptions, isGameEnabled, showGamePicker } from '../utils/games';
 import { useT } from '../utils/i18n';
 import { onActivateKey } from '../utils/a11y';
 import { useApi } from '../utils/useApi';
@@ -538,6 +538,8 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
     // translated one: a Japanese Magic card is stored under its English `name`,
     // so typing 稲妻 only finds it via printed_name.
     const rawSearch = searchFilter.toLowerCase();
+    // Read once per pass: enabledGames() parses localStorage on every call.
+    const shownGames = enabledGames();
     const result = collection.filter(item => {
       const matchesSearch = syntaxFilter ? syntaxFilter.matches(item) :
                             item.name.toLowerCase().includes(translatedSearch) ||
@@ -549,7 +551,7 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
       // "All games" still means only the games the user has chosen to see: a hidden
       // game's cards stay in the collection (and in exports) but are out of view.
       const itemGame = item.game || 'pokemon';
-      const matchesGame = gameFilter === '' ? isGameEnabled(itemGame) : itemGame === gameFilter;
+      const matchesGame = gameFilter === '' ? shownGames.includes(String(itemGame).toLowerCase()) : itemGame === gameFilter;
       const matchesRarity = rarityFilter.length === 0 ? true : rarityFilter.includes(item.rarity);
       const matchesCondition = conditionFilter.length === 0 ? true : conditionFilter.includes(item.condition);
       const matchesPrinting = printingFilter.length === 0 ? true : printingFilter.includes(item.printing);

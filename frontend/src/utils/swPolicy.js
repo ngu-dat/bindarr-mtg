@@ -25,6 +25,29 @@ export const DATA_PREFIX = 'bindarr-data-';
 export const MAX_IMAGES = 500;
 export const MAX_API = 150;
 
+export const IMAGE_CACHE_PRUNE_BATCH = 32;
+
+export function shouldTrimImageCache(imageCount) {
+  return imageCount >= MAX_IMAGES + IMAGE_CACHE_PRUNE_BATCH;
+}
+
+export async function trimImagesWhenNeeded(state, reconcile) {
+  while (shouldTrimImageCache(state.count) || state.reconcileAgain) {
+    if (!state.trimming) {
+      const version = state.version;
+      state.reconcileAgain = false;
+      state.trimming = reconcile()
+        .then((count) => {
+          const writesDuringScan = state.version - version;
+          state.count = count + writesDuringScan;
+          state.reconcileAgain = writesDuringScan > 0;
+        })
+        .finally(() => { state.trimming = null; });
+    }
+    await state.trimming;
+  }
+}
+
 // Set on a response served from the cache because the network failed, so the
 // page can tell "offline" apart from "online but slow".
 export const OFFLINE_HEADER = 'X-Bindarr-Offline';

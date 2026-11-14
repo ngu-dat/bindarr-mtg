@@ -1,4 +1,4 @@
-import { Suspense, useState, useEffect, useMemo } from 'react';
+import { Suspense, memo, useState, useEffect, useMemo, useCallback } from 'react';
 import { Search, Trophy, Compass, Library, ShieldAlert, Sparkles, X, MapPin, SlidersHorizontal } from 'lucide-react';
 import Logo from './Logo';
 import RiotNotice from './RiotNotice';
@@ -9,6 +9,7 @@ import Modal from './Modal';
 import { sortCardsByOrder } from '../utils/cardSort';
 import { displayName } from '../utils/languages';
 import CardImage from './CardImage';
+import VirtualGrid from './VirtualGrid';
 import { useT } from '../utils/i18n';
 import { onActivateKey } from '../utils/a11y';
 import { apiErrorText } from '../utils/apiError';
@@ -56,6 +57,45 @@ function typeColor(name, i) {
   const key = Object.keys(TYPE_COLORS).find(k => k.toLowerCase() === String(name).toLowerCase());
   return key ? TYPE_COLORS[key] : COLORS[i % COLORS.length];
 }
+
+// One card in the shared grid. Memoized, with only the row, a boolean and
+// stable callbacks as props, so a scroll mounting new rows renders just those.
+const SharedTile = memo(function SharedTile({ card, shareLocations, onOpen, t }) {
+  const rarity = (card.rarity || '').toLowerCase();
+  const isUltra = rarity.includes('rare') || rarity.includes('secret') || rarity.includes('promo') || rarity.includes('ultra');
+  const foilClass = getFoilOverlayClass(card.printing);
+  const badge = getPrintingBadgeLabel(card.printing, t);
+  return (
+    <div className="tcg-card tilt-card-wrapper" role="button" tabIndex={0} onClick={() => onOpen(card)} onKeyDown={onActivateKey(() => onOpen(card))}>
+      <div className={`tcg-card-inner ${isUltra ? 'rarity-glow-ultra' : ''}`}>
+        <CardImage card={card} className="tcg-card-image" loading="lazy" />
+        {foilClass && (
+          <div className={foilClass} style={{ borderRadius: 'var(--radius-sm)' }} />
+        )}
+        {badge && (
+          <span style={{ position: 'absolute', top: '6px', left: '6px', fontSize: '0.6rem', fontWeight: 800, padding: '2px 5px', borderRadius: '3px', zIndex: 6, ...getPrintingBadgeStyle(card.printing) }}>
+            {badge}
+          </span>
+        )}
+        {card.quantity > 1 && (
+          <div className="tcg-card-quantity-tag">x{card.quantity}</div>
+        )}
+      </div>
+      <div className="tcg-card-info">
+        <div className="tcg-card-name">{displayName(card)}</div>
+        <div className="tcg-card-meta">
+          <span style={{ fontSize: '0.7rem' }}>{card.set_name} • #{card.number}</span>
+          <span className="tcg-card-price"><Price value={card.price_trend} currency={card.price_currency} /></span>
+        </div>
+        {shareLocations && card.location && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+            <MapPin size={11} /> {card.location}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
 
 function SharedCollection({ shareToken }) {
   const { t, locale } = useT();
@@ -109,7 +149,6 @@ function SharedCollection({ shareToken }) {
   }, [shareToken, listType, t]);
 
   const collection = useMemo(() => data?.collection || [], [data]);
-  const shareLocations = data?.shareLocations;
 
   const uniqueRarities = useMemo(() => Array.from(new Set(collection.map(c => c.rarity).filter(Boolean))), [collection]);
   const uniqueTypes = useMemo(
@@ -155,6 +194,13 @@ function SharedCollection({ shareToken }) {
     });
     return Object.values(groups);
   }, [filteredCollection, stackCards, stackByCondition, stackByPrinting]);
+
+  // Stable unless the language or the location setting changes, so a scroll
+  // re-renders only the tiles it mounts.
+  const shareLocations = data?.shareLocations;
+  const renderTile = useCallback((card) => (
+    <SharedTile key={card.entry_id} card={card} shareLocations={shareLocations} onOpen={setActiveCard} t={t} />
+  ), [shareLocations, t]);
 
   if (loading) {
     return (
@@ -395,42 +441,9 @@ function SharedCollection({ shareToken }) {
           {t('collection.noMatches')}
         </div>
       ) : (
-        <div className="card-grid">
-          {processedCollection.map(card => {
-            const rarity = (card.rarity || '').toLowerCase();
-            const isUltra = rarity.includes('rare') || rarity.includes('secret') || rarity.includes('promo') || rarity.includes('ultra');
-            return (
-              <div key={card.entry_id} className="tcg-card tilt-card-wrapper" role="button" tabIndex={0} onClick={() => setActiveCard(card)} onKeyDown={onActivateKey(() => setActiveCard(card))}>
-                <div className={`tcg-card-inner ${isUltra ? 'rarity-glow-ultra' : ''}`}>
-                  <CardImage card={card} className="tcg-card-image" loading="lazy" />
-                  {getFoilOverlayClass(card.printing) && (
-                    <div className={getFoilOverlayClass(card.printing)} style={{ borderRadius: 'var(--radius-sm)' }} />
-                  )}
-                  {getPrintingBadgeLabel(card.printing, t) && (
-                    <span style={{ position: 'absolute', top: '6px', left: '6px', fontSize: '0.6rem', fontWeight: 800, padding: '2px 5px', borderRadius: '3px', zIndex: 6, ...getPrintingBadgeStyle(card.printing) }}>
-                      {getPrintingBadgeLabel(card.printing, t)}
-                    </span>
-                  )}
-                  {card.quantity > 1 && (
-                    <div className="tcg-card-quantity-tag">x{card.quantity}</div>
-                  )}
-                </div>
-                <div className="tcg-card-info">
-                  <div className="tcg-card-name">{displayName(card)}</div>
-                  <div className="tcg-card-meta">
-                    <span style={{ fontSize: '0.7rem' }}>{card.set_name} • #{card.number}</span>
-                    <span className="tcg-card-price"><Price value={card.price_trend} currency={card.price_currency} /></span>
-                  </div>
-                  {shareLocations && card.location && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-                      <MapPin size={11} /> {card.location}
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        /* Only the rows near the viewport are mounted: a shared collection of a few
+           thousand cards would otherwise put tens of thousands of nodes on the page. */
+        <VirtualGrid items={processedCollection} renderItem={renderTile} className="card-grid" />
       )}
 
       {/* Read-only Card Detail Modal */}

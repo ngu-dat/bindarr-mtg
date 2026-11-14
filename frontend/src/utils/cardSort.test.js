@@ -92,4 +92,19 @@ assert.deepStrictEqual(
   'colour sort: W, U, B, R, G, then Multicolor, then Colorless'
 );
 
+// Set sort follows the sets list's order (release order from /api/sets); a set
+// listed twice ranks by its first entry, and an unlisted set sorts last.
+const setsList = [{ name: 'Alpha' }, { name: 'Beta' }, { name: 'Gamma' }, { name: 'Alpha' }];
+assert.deepStrictEqual(
+  sortCardsByOrder([
+    { name: 'u', set_name: 'Unlisted', number: '1' },
+    { name: 'g', set_name: 'Gamma', number: '1' },
+    { name: 'a2', set_name: 'Alpha', number: '2' },
+    { name: 'b', set_name: 'Beta', number: '1' },
+    { name: 'a1', set_name: 'Alpha', number: '1' },
+  ], [{ by: 'set', dir: 'asc' }, { by: 'number', dir: 'asc' }], undefined, setsList).map(c => c.name),
+  ['a1', 'a2', 'b', 'g', 'u'],
+  'set sort: sets list order, first entry wins, unlisted last'
+);
+
 console.log('PASS: cardSort type, colour sort and grouping');

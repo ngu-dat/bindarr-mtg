@@ -1088,6 +1088,8 @@
   "scan.editEntry": "Eintrag bearbeiten",
   "scan.errReplace": "Karte konnte nicht ersetzt werden.",
   "scan.errReplaceCleanup": "Die neue Karte wurde hinzugefügt, die alte konnte aber nicht entfernt werden. Bitte die Sammlung prüfen.",
+  "scan.toggleFoil": "Zwischen Foil und Normal wechseln",
+  "scan.errPrinting": "Ausführung konnte nicht geändert werden.",
   "scan.tapToChange": "Tippe die Karte an, um Zustand/Foil zu ändern",
   "scan.unknownError": "unbekannter Fehler",
   "search.addCardTitle": "Karte zur Sammlung hinzufügen",

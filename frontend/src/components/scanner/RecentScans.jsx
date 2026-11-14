@@ -1,4 +1,5 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState } from 'react';
+import { Sparkles } from 'lucide-react';
 import { onActivateKey } from '../../utils/a11y';
 import { getCardDisplayName } from '../../utils/langHelper';
 import Price from '../Price';
@@ -6,15 +7,25 @@ import { useT } from '../../utils/i18n';
 import { useFx } from '../../utils/useFx';
 import { totalPrices } from '../../utils/convertPrice';
 import { priceText } from '../../utils/formatPrice';
+import { printingLabel } from '../../utils/cardOptions';
 
 // The running list of cards this session added, newest first, with a count and
 // total value — the scanner's record of the run, in place of a toast per card.
 // Long-press multi-select and bulk actions as on the collection page. A tile the
 // matcher was unsure of carries a "?" and opens its alternatives when tapped.
 function RecentScans({
-  recentSelect, setRecentScans, recentScans, activateRecent,
+  recentSelect, setRecentScans, recentScans, activateRecent, togglePrinting,
 }) {
   const { t } = useT();
+  // Tiles whose finish change is in flight, so a double tap cannot flip twice.
+  const [switching, setSwitching] = useState(() => new Set());
+  const flip = async (item) => {
+    if (switching.has(item.entry_id)) return;
+    setSwitching(prev => new Set(prev).add(item.entry_id));
+    try { await togglePrinting(item); } finally {
+      setSwitching(prev => { const n = new Set(prev); n.delete(item.entry_id); return n; });
+    }
+  };
   const { fx, currency } = useFx();
   const copies = recentScans.reduce((n, s) => n + (s.quantity || 1), 0);
   const value = useMemo(
@@ -80,6 +91,27 @@ function RecentScans({
             />
             </div>
             <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--accent-yellow)', textAlign: 'center' }}><Price value={item.price_trend} currency={item.price_currency} /></div>
+            {/* Foil or not: what a scan cannot see, so it is one tap here. Its own
+                button, kept out of the tile's tap and long-press. */}
+            {(() => {
+              const foil = item.printing !== 'Normal';
+              return (
+                <button
+                  type="button"
+                  className={`btn ${foil ? 'btn-primary' : 'btn-secondary'}`}
+                  disabled={recentSelect.selectMode || switching.has(item.entry_id)}
+                  onClick={(e) => { e.stopPropagation(); flip(item); }}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  title={t('scan.toggleFoil')}
+                  aria-pressed={foil}
+                  style={{ fontSize: '0.6rem', padding: '0.15rem 0.3rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.2rem', minHeight: 0, width: '100%', whiteSpace: 'nowrap', overflow: 'hidden' }}
+                >
+                  {foil && <Sparkles size={10} style={{ flexShrink: 0 }} />}
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{printingLabel(t, item.printing, item.game)}</span>
+                </button>
+              );
+            })()}
             {item.placementLabel && (
               <div style={{ fontSize: '0.55rem', color: '#ffc107', textAlign: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.placementLabel}>{item.placementLabel}</div>
             )}

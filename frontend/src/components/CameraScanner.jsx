@@ -1159,6 +1159,36 @@ function CameraScanner({ onAddSuccess, showToast }) {
     else setInspectorEntry(item);
   };
 
+  // The foil/normal switch on a scan tile: scanning cannot tell the finish
+  // apart, so this is the one-tap fix. Every row the tile stands for is
+  // re-filed, with the purchase price taken from the new finish (as an add
+  // does). Anything not 'Normal' switches to 'Normal'.
+  const togglePrinting = async (item) => {
+    const next = item.printing === 'Normal' ? 'Holofoil' : 'Normal';
+    const price = resolveCardPrice(item, next);
+    const ids = item.member_ids?.length ? item.member_ids : [item.entry_id];
+    try {
+      const results = await Promise.all(ids.map(id => fetch(`/api/collection/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ printing: next, purchase_price: price }),
+      }).then(async r => (r.ok ? r.json() : null)).catch(() => null)));
+      if (results.some(r => !r)) {
+        showToast(t('scan.errPrinting'));
+        onAddSuccess();
+        return;
+      }
+      const placed = results.find(r => r.placement?.label)?.placement?.label;
+      setRecentScans(prev => prev.map(s => (s.entry_id !== item.entry_id ? s : {
+        ...s, printing: next, purchase_price: price, ...(placed ? { placementLabel: placed } : {}),
+      })));
+      onAddSuccess();
+    } catch (err) {
+      console.error('Printing toggle failed:', err);
+      showToast(t('scan.errPrinting'));
+    }
+  };
+
   // A tile (or card) as a plain card to offer as an alternative: no entry ids,
   // which belong to the rows it was saved as, and no nested alternatives.
   const asAlternative = (c) => {
@@ -1265,7 +1295,7 @@ function CameraScanner({ onAddSuccess, showToast }) {
   // Handlers for the memoized panels below, stable across renders so a scanner
   // render does not re-render a panel whose own props did not change.
   const stable = useStableHandlers({
-    autoAddCard, openQuickAdd, showToast, replaceRecentScan,
+    autoAddCard, openQuickAdd, showToast, replaceRecentScan, togglePrinting,
     dismissMatches, startCamera, handleManualSearch, activateRecent,
   });
 
@@ -1903,6 +1933,7 @@ function CameraScanner({ onAddSuccess, showToast }) {
       {recentScans.length > 0 && (
         <RecentScans
           recentSelect={recentSelect} setRecentScans={setRecentScans} recentScans={recentScans} activateRecent={stable.activateRecent}
+          togglePrinting={stable.togglePrinting}
         />
       )}
 

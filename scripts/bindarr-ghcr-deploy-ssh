@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# This is the forced command for the GitHub Actions deploy key. Do not accept
+# arbitrary SSH commands: the key is allowed to deploy only a published image tag.
+if [[ ! ${SSH_ORIGINAL_COMMAND:-} =~ ^deploy[[:space:]](sha-[0-9a-f]{7}|edge)$ ]]; then
+  echo 'Only a Bindarr image deployment is allowed with this key.' >&2
+  exit 126
+fi
+
+export BINDARR_IMAGE="ghcr.io/ngu-dat/bindarr-mtg:${BASH_REMATCH[1]}"
+exec /usr/local/sbin/deploy-bindarr-ghcr

@@ -8,13 +8,13 @@
 
 Identify cards with your phone camera, track prices, record which binder page and slot each card lives in, and pull decks back out again.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/thenotoriousJeremy/bindarr/docker-build.yml?branch=main&label=CI&logo=github)](https://github.com/thenotoriousJeremy/bindarr/actions/workflows/docker-build.yml)
-[![Docker image](https://img.shields.io/badge/ghcr.io-bindarr-2496ED?logo=docker&logoColor=white)](https://github.com/thenotoriousJeremy/bindarr/pkgs/container/bindarr)
+[![CI](https://img.shields.io/github/actions/workflow/status/ngu-dat/bindarr-mtg/docker-build.yml?branch=main&label=CI&logo=github)](https://github.com/ngu-dat/bindarr-mtg/actions/workflows/docker-build.yml)
+[![Docker image](https://img.shields.io/badge/Docker%20image-GHCR-2496ED?logo=docker&logoColor=white)](https://github.com/ngu-dat/bindarr-mtg/pkgs/container/bindarr-mtg)
 [![License: MIT](https://img.shields.io/github/license/thenotoriousJeremy/bindarr?color=blue)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/thenotoriousJeremy/bindarr?style=flat&logo=github)](https://github.com/thenotoriousJeremy/bindarr/stargazers)
 [![Issues](https://img.shields.io/github/issues/thenotoriousJeremy/bindarr)](https://github.com/thenotoriousJeremy/bindarr/issues)
 
-[Live demo](https://thenotoriousjeremy.github.io/bindarr/) · [Install](#install) · [Features](#features) · [How it works](PROJECT.md) · [Report a bug](https://github.com/thenotoriousJeremy/bindarr/issues/new)
+[Upstream live demo](https://thenotoriousjeremy.github.io/bindarr/) · [Install](#install) · [Features](#features) · [How it works](PROJECT.md) · [Report a bug](https://github.com/thenotoriousJeremy/bindarr/issues/new)
 
 </div>
 
@@ -22,7 +22,7 @@ Identify cards with your phone camera, track prices, record which binder page an
 
 https://github.com/user-attachments/assets/4ee6c23f-a024-499b-9fc3-3d144c42ba61
 
-Try it without installing anything at **[thenotoriousjeremy.github.io/bindarr](https://thenotoriousjeremy.github.io/bindarr/)**. The demo runs the real frontend against sample data, so edits aren't saved and scanning is off (it needs a server).
+The upstream project's [live demo](https://thenotoriousjeremy.github.io/bindarr/) runs the frontend against sample data, so edits aren't saved and scanning is off (it needs a server).
 
 ---
 
@@ -93,7 +93,7 @@ No clone, no build. Create a `docker-compose.yml`:
 ```yaml
 services:
   bindarr:
-    image: ghcr.io/thenotoriousjeremy/bindarr:latest
+    image: ghcr.io/ngu-dat/bindarr-mtg:edge
     container_name: bindarr
     restart: unless-stopped
     ports:
@@ -143,14 +143,41 @@ Publish only the one you use. Behind a proxy, drop the `3443` line and set `TRUS
 
 The HTTPS certificate is self-signed and generated on first start into the volume, so your browser warns once per device (**Advanced → Proceed**; iOS Safari: **Show Details → Visit this website**). Mount a real certificate and set `SSL_CERT_PATH` + `SSL_KEY_PATH` to skip the warning.
 
+This fork publishes multi-architecture images to the [GHCR package](https://github.com/ngu-dat/bindarr-mtg/pkgs/container/bindarr-mtg). Use `edge` to follow `main`; pushes are deployed to the configured server only after the build and smoke tests pass.
+
 #### Image tags
 
 | Tag | Points at |
 | --- | --- |
-| `latest` | newest release — use this |
+| `latest` | newest versioned release |
 | `1.9`, `1.9.0` | a specific release, if you want to control upgrades |
-| `edge` | newest `main` commit, including unreleased work |
+| `edge` | newest `main` commit from this fork |
 | `sha-<short>` | one exact commit |
+
+### Automatic deployment to a self-hosted server
+
+After a push to this fork's `main` passes the backend/frontend checks, the Docker
+workflow builds and smoke-tests both architectures, publishes the image, then
+connects to the configured server and deploys that exact commit. The server
+creates a database backup before replacing the container and rolls back to its
+previous image if the health check fails. The deployment SSH key is restricted
+to this fixed deploy command.
+
+Configure these repository Actions variables and secret:
+
+| Name | Type | Value |
+| --- | --- | --- |
+| `BINDARR_DEPLOY_HOST` | Variable | Server host or IP |
+| `BINDARR_DEPLOY_USER` | Variable | SSH user with the restricted deploy key (this fork's server uses `root`) |
+| `BINDARR_DEPLOY_KNOWN_HOSTS` | Variable | Verified `known_hosts` line for the server |
+| `BINDARR_DEPLOY_SSH_KEY` | Secret | Private half of the server's restricted Ed25519 deploy key |
+
+Install `scripts/bindarr-ghcr-deploy-ssh` as the forced command and
+`scripts/deploy-bindarr-ghcr.sh` on the server at `/usr/local/sbin`; add the
+public key to `authorized_keys` with `restrict`. The Compose override should
+select `ghcr.io/ngu-dat/bindarr-mtg:edge` by default. The deployment workflow
+passes an immutable `sha-<short>` tag so the server runs the exact image that
+passed CI.
 
 #### Environment variables
 

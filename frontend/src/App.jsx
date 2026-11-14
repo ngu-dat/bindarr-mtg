@@ -3,7 +3,7 @@ import { LayoutDashboard, Database, MapPin, Sparkles, Settings as SettingsIcon, 
 import Login from './components/Login';
 import Logo from './components/Logo';
 import { App as CapacitorApp } from '@capacitor/app';
-import { useRouteSync, goToTab, initialTab } from './utils/router';
+import { useRouteSync, goToTab, initialTab, currentPath } from './utils/router';
 import { useT } from './utils/i18n';
 import { useStableCallback } from './utils/useStableCallback';
 import { clearApiCache } from './utils/useApi';
@@ -36,6 +36,7 @@ const Lists = lazyWithReload(() => import('./components/Lists'));
 const Notes = lazyWithReload(() => import('./components/Notes'));
 const SealedList = lazyWithReload(() => import('./components/SealedList'));
 const SetCompletion = lazyWithReload(() => import('./components/SetCompletion'));
+const MagicBulkImport = lazyWithReload(() => import('./components/MagicBulkImport'));
 
 // Each nav-bar tab's label and icon. Which of them the bar shows is the user's
 // choice (utils/navTabs.js, Settings).
@@ -241,8 +242,9 @@ function App() {
     const id = new URLSearchParams(window.location.search).get('container');
     return /^\d+$/.test(id || '') ? id : null;
   });
+  const isMagicBulkImportPath = !isDeviceMode() && /^\/bulkimport\/?$/.test(currentPath());
 
-  useRouteSync({ enabled: !shareToken, signedIn: !!(token && user), activeTab, showTab });
+  useRouteSync({ enabled: !shareToken && !isMagicBulkImportPath, signedIn: !!(token && user), activeTab, showTab });
 
   // showToast(message) for a note; showToast(message, { onAction, actionLabel })
   // adds a button (Undo by default) and keeps the toast up long enough to use it.
@@ -544,6 +546,24 @@ function App() {
           ? <SharedContainer shareToken={shareToken} containerId={sharedContainerId} />
           : <SharedCollection shareToken={shareToken} />}
       </Suspense>
+    );
+  }
+
+  if (isMagicBulkImportPath) {
+    if (!token || !user) {
+      return (
+        <>
+          <Login onLoginSuccess={handleLoginSuccess} />
+          {toast && <div className="toast">{toast}</div>}
+        </>
+      );
+    }
+    return (
+      <ErrorBoundary key="magic-bulk-import" active t={t}>
+        <Suspense fallback={<ChunkFallback />}>
+          <MagicBulkImport user={user} onLogout={handleLogout} />
+        </Suspense>
+      </ErrorBoundary>
     );
   }
 

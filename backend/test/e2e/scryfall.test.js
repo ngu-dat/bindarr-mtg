@@ -280,9 +280,10 @@ async function runTests() {
     }
 
     // F3-TC8: Verify cache expiration (3 days) triggers background refresh
+    let serverExp;
     try {
       port = await getNextPort();
-      const serverExp = spawn('node', ['-r', mockScript, serverScript], {
+      serverExp = spawn('node', ['-r', mockScript, serverScript], {
         env: {
           ...process.env,
           PORT: port,
@@ -305,13 +306,18 @@ async function runTests() {
       let fresh = false;
       for (let i = 0; i < 25 && !fresh; i++) {
         await new Promise(resolve => setTimeout(resolve, 200));
-        const cached = await db.get(`SELECT last_updated FROM card_cache WHERE id = ?`, ['mtg-54321']);
-        fresh = Date.now() - new Date(cached.last_updated).getTime() < 10000;
+        const cached = await db.get(`
+          SELECT last_updated >= DATETIME('now', '-10 seconds')
+             AND last_updated <= DATETIME('now', '+10 seconds') AS fresh
+          FROM card_cache WHERE id = ?
+        `, ['mtg-54321']);
+        fresh = !!cached?.fresh;
       }
       assert.ok(fresh, 'Background refresh should update last_updated to now');
       console.log('PASS: F3-TC8');
       await stopServer(serverExp, port);
     } catch (err) {
+      await stopServer(serverExp, port);
       console.error('FAIL: F3-TC8 -', err.message);
       throw err;
     }

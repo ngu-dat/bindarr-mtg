@@ -6,12 +6,13 @@ const scryfallApi = require('../scryfallApi');
 const catalog = require('../catalog');
 const { parseCardRow } = require('../utils/priceHelpers');
 const languages = require('../utils/languages');
-const { authenticateToken, requireAdmin } = require('../middleware/auth');
+const { authenticateToken, requireAdmin, importLimiter } = require('../middleware/auth');
 const metrics = require('../utils/metrics');
 const getCollectionMetrics = require('../utils/collectionMetrics');
 const { revokeSessions } = require('../utils/authHelpers');
 const { BACKUP_DIR, listBackups, createBackup, resolveBackupFile } = require('../backup');
 const binderArtStore = require('../utils/binderArtStore');
+const { parseMagicCsv } = require('../utils/magicCsvImport');
 
 const router = express.Router();
 
@@ -196,6 +197,119 @@ router.get('/users', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to retrieve users list' });
+  }
+});
+
+async function findMagicImportTarget(id) {
+  if (!/^\d+$/.test(String(id || ''))) return null;
+  return db.get('SELECT id, username FROM users WHERE id = ?', [id]);
+}
+
+function magicImportPreview(parsed, target) {
+  return {
+    targetUser: { id: target.id, username: target.username },
+    rowCount: parsed.rowCount,
+    copyCount: parsed.copyCount,
+    errors: parsed.errors,
+    unsupportedColumns: parsed.unsupportedColumns
+  };
+}
+
+router.post('/users/:id/mtg-import/preview', express.text({ type: 'text/csv', limit: '5mb' }), async (req, res) => {
+  try {
+    const target = await findMagicImportTarget(req.params.id);
+    if (!target) return res.status(404).json({ error: 'Target user not found.', code: 'import_target_not_found' });
+    if (typeof req.body !== 'string') return res.status(400).json({ error: 'Upload a CSV file as text/csv.', code: 'import_csv_required' });
+
+    return res.json(magicImportPreview(parseMagicCsv(req.body), target));
+  } catch (error) {
+    console.error('Magic CSV preview failed:', error);
+    return res.status(500).json({ error: 'Could not preview the Magic CSV.', code: 'magic_import_preview_failed' });
+  }
+});
+
+router.post('/users/:id/mtg-import', importLimiter, express.text({ type: 'text/csv', limit: '5mb' }), async (req, res) => {
+  try {
+    const target = await findMagicImportTarget(req.params.id);
+    if (!target) return res.status(404).json({ error: 'Target user not found.', code: 'import_target_not_found' });
+    if (typeof req.body !== 'string') return res.status(400).json({ error: 'Upload a CSV file as text/csv.', code: 'import_csv_required' });
+
+    const parsed = parseMagicCsv(req.body);
+    if (!parsed.rows.length) {
+      return res.status(400).json({
+        error: 'The CSV has no valid Magic rows to import.',
+        code: 'magic_import_no_valid_rows',
+        ...magicImportPreview(parsed, target)
+      });
+    }
+
+    let cards;
+    let pairs;
+    try {
+      const requests = parsed.rows.map(importRow => ({
+        ...importRow.item,
+        id: importRow.item.card_id,
+        set_id: importRow.item.set_code,
+        number: importRow.item.collector_number,
+        magicImportRow: importRow
+      }));
+      ({ cards, pairs } = await scryfallApi.bulkFetchByIdentifier(requests));
+    } catch (error) {
+      console.error('Magic CSV Scryfall lookup failed:', error);
+      return res.status(502).json({ error: 'Scryfall lookup failed. No collection copies were imported.', code: 'magic_import_scryfall_failed' });
+    }
+
+    try {
+      await scryfallApi.cacheCards(cards);
+    } catch (error) {
+      console.error('Magic CSV card cache failed:', error);
+      return res.status(500).json({ error: 'Matched cards could not be cached. No collection copies were imported.', code: 'magic_import_cache_failed' });
+    }
+
+    let importedCopies = 0;
+    try {
+      await db.withTransaction(async () => {
+        for (const { row, card } of pairs) {
+          const item = row.magicImportRow.item;
+          for (let i = 0; i < item.quantity; i++) {
+            await db.run(`
+              INSERT INTO collection
+                (card_id, user_id, quantity, condition, printing, language, purchase_price, game, added_at)
+              VALUES (?, ?, 1, ?, ?, ?, ?, 'mtg', COALESCE(?, CURRENT_TIMESTAMP))
+            `, [
+              card.id,
+              target.id,
+              item.condition,
+              item.printing,
+              item.language,
+              item.purchase_price,
+              row.magicImportRow.added_at
+            ]);
+            importedCopies++;
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Magic CSV collection transaction failed:', error);
+      return res.status(500).json({ error: 'Collection import failed. No collection copies were added.', code: 'magic_import_transaction_failed' });
+    }
+
+    const matchedRows = new Set(pairs.map(({ row }) => row.magicImportRow.csvRow));
+    const unmatched = parsed.rows.filter(row => !matchedRows.has(row.csvRow));
+    return res.json({
+      success: true,
+      targetUser: { id: target.id, username: target.username },
+      importedRows: matchedRows.size,
+      importedCopies,
+      unmatchedRows: unmatched.length,
+      unmatchedCopies: unmatched.reduce((total, row) => total + row.item.quantity, 0),
+      errors: parsed.errors,
+      invalidRows: new Set(parsed.errors.map(item => item.row)).size,
+      unsupportedColumns: parsed.unsupportedColumns
+    });
+  } catch (error) {
+    console.error('Magic CSV import failed:', error);
+    return res.status(500).json({ error: 'Could not import the Magic CSV.', code: 'magic_import_failed' });
   }
 });
 

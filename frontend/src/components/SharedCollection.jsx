@@ -83,13 +83,16 @@ const SharedTile = memo(function SharedTile({ card, shareLocations, onOpen, t })
       </div>
       <div className="tcg-card-info">
         <div className="tcg-card-name">{displayName(card)}</div>
-        <div className="tcg-card-meta">
+        {/* Single lines only: VirtualGrid needs every tile the same height, and a
+            long set name wrapping onto a second line made it re-measure forever. */}
+        <div className="tcg-card-meta tcg-card-meta-single">
           <span style={{ fontSize: '0.7rem' }}>{card.set_name} • #{card.number}</span>
           <span className="tcg-card-price"><Price value={card.price_trend} currency={card.price_currency} /></span>
         </div>
         {shareLocations && card.location && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-            <MapPin size={11} /> {card.location}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.15rem', whiteSpace: 'nowrap' }}>
+            <MapPin size={11} style={{ flexShrink: 0 }} />
+            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{card.location}</span>
           </div>
         )}
       </div>

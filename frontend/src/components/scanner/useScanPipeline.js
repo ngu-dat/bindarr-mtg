@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { requestDetect, stopDetect, smoothQuad, meanCornerDrift, DETECT_W } from '../../utils/cardDetector';
-import { shouldCapture, shouldRearm, nextChangedFrames, autoStatusKey } from '../../utils/autoCapture';
+import { shouldCapture, shouldRearm, nextChangedFrames, autoStatusKey, REARM_CHANGED_FRAMES } from '../../utils/autoCapture';
 import { createLiveValue } from '../../utils/liveValue';
 import { DETECT_INTERVAL_MS, DETECT_IDLE_MS, STEADY_DRIFT, STEADY_FRAMES_NEEDED, MIN_FILL } from './scanConstants';
 
@@ -56,6 +56,11 @@ export function useScanPipeline({
   const [detectorDown, setDetectorDown] = useState(false);
   const showSettingsRef = useRef(false); // the readout is only rendered while open
   const autoArmed = useRef(true);       // auto-capture is ready to fire
+  // How the scanner last became ready again: 'empty' (the card was lifted off),
+  // 'changed' (a different card took its place), 'drift' (the same card was only
+  // moved) or 'fresh' (nothing to compare with). Auto-add files a repeat of the
+  // card it just added as another copy, except after a mere 'drift'.
+  const rearmedBy = useRef('fresh');
   const emptyFrames = useRef(0);        // consecutive "no card" detections
   const lastSeenAt = useRef(0);         // when a detection last saw a card
   const capturedQuad = useRef(null);    // quad at the last auto-capture
@@ -233,6 +238,7 @@ export function useScanPipeline({
         emptyFrames.current += 1;
         const emptyMs = Date.now() - lastSeenAt.current;
         if (shouldRearm({ armed: autoArmed.current, emptyFrames: emptyFrames.current, emptyMs, quad: null, capturedQuad: capturedQuad.current })) {
+          if (!autoArmed.current) rearmedBy.current = 'empty';
           autoArmed.current = true;
           capturedQuad.current = null;
           resolvedDupIdRef.current = null;
@@ -272,6 +278,7 @@ export function useScanPipeline({
       });
       lastSig.current = found.sig || null;
       if (shouldRearm({ armed: autoArmed.current, emptyFrames: 0, quad: found.quad, capturedQuad: capturedQuad.current, changedFrames: changedFrames.current })) {
+        if (!autoArmed.current) rearmedBy.current = changedFrames.current >= REARM_CHANGED_FRAMES ? 'changed' : 'drift';
         autoArmed.current = true;
         capturedQuad.current = null;
         resolvedDupIdRef.current = null;
@@ -323,7 +330,7 @@ export function useScanPipeline({
 
   return {
     detectQuadStore, autoStateStore, detectStatsStore, detectorDown,
-    autoArmed, capturedQuad, lastRawQuad, lastSig, capturedSig, changedFrames,
+    autoArmed, rearmedBy, capturedQuad, lastRawQuad, lastSig, capturedSig, changedFrames,
     lastCaptureAt, bestFrame, autoScanRef, minFillRef, minSteadyRef, showSettingsRef,
     frameWorthCapturing, refreshAutoState,
   };

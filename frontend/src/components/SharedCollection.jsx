@@ -14,6 +14,8 @@ import { useT } from '../utils/i18n';
 import { onActivateKey } from '../utils/a11y';
 import { apiErrorText } from '../utils/apiError';
 import { lazyNamed } from '../utils/lazyWithReload';
+import { compileCollectionFilter, syntaxErrorText } from '../utils/scryfallSyntax';
+import ScryfallSyntaxHelp from './ScryfallSyntaxHelp';
 import ChartFallback from './charts/ChartFallback';
 
 // The plots are code-split (charts/SharedCharts), so a visitor sees the numbers
@@ -164,10 +166,21 @@ function SharedCollection({ shareToken }) {
     [collection]
   );
 
+  // Like the owner's collection, the search box also takes Scryfall syntax
+  // (t:creature c:g cmc<=3) when there are Magic cards to answer it. Compiled
+  // once per edit; null for a plain search, which keeps the name / set / number
+  // match. The syntax only means something for Magic, so it matches only those.
+  const hasMtg = useMemo(() => collection.some(c => c.game === 'mtg'), [collection]);
+  const syntaxFilter = useMemo(
+    () => (hasMtg ? compileCollectionFilter(searchFilter) : null),
+    [hasMtg, searchFilter]
+  );
+
   const filteredCollection = useMemo(() => {
     const q = searchFilter.toLowerCase();
     const result = collection.filter(item => {
-      const matchesSearch = item.name.toLowerCase().includes(q) ||
+      const matchesSearch = syntaxFilter ? (item.game === 'mtg' && syntaxFilter.matches(item)) :
+        item.name.toLowerCase().includes(q) ||
         (item.set_name || '').toLowerCase().includes(q) ||
         (item.number || '').includes(searchFilter);
       const matchesRarity = !rarityFilter || item.rarity === rarityFilter;
@@ -177,7 +190,7 @@ function SharedCollection({ shareToken }) {
     });
     if (sortBy === 'qty-desc') return result.sort((a, b) => (b.quantity || 0) - (a.quantity || 0));
     return sortCardsByOrder(result, SORT_CRITERIA[sortBy] || SORT_CRITERIA['added-newest']);
-  }, [collection, searchFilter, rarityFilter, printingFilter, typeFilter, sortBy]);
+  }, [collection, searchFilter, syntaxFilter, rarityFilter, printingFilter, typeFilter, sortBy]);
 
   // Group duplicate cards if stack option is active (default true)
   const processedCollection = useMemo(() => {
@@ -384,6 +397,16 @@ function SharedCollection({ shareToken }) {
             <SlidersHorizontal size={15} /> {t('collection.filters')}
           </button>
         </div>
+
+        {/* Under the whole bar, so the search field keeps its height in the row. */}
+        {syntaxFilter?.error && (
+          <div role="alert" style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--accent-red)' }}>
+            {syntaxErrorText(t, syntaxFilter.error)}
+          </div>
+        )}
+        {hasMtg && (
+          <div style={{ marginTop: '0.5rem' }}><ScryfallSyntaxHelp context="collection" /></div>
+        )}
 
         {showFilters && (
           <div style={{ marginTop: '1rem' }}>

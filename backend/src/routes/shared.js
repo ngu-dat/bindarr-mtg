@@ -161,6 +161,19 @@ router.get('/:share_token', async (req, res) => {
         cc.price_holofoil,
         cc.price_reverse_holofoil,
         cc.price_1st_edition,
+        cc.price_currency,
+        cc.game,
+        -- What the Scryfall-syntax search box matches the shared rows against
+        -- (t:creature c:g cmc<=3), the same card columns the owner's grid loads.
+        -- Card facts only: nothing here is about the owner's copy.
+        cc.cmc,
+        cc.type_line,
+        cc.oracle_text,
+        cc.mana_cost,
+        cc.power,
+        cc.toughness,
+        cc.loyalty,
+        cc.keywords,
         l.name AS location_name
       FROM collection c
       JOIN card_cache cc ON c.card_id = cc.id

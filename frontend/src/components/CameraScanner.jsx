@@ -20,8 +20,7 @@ import LangFallbackNote from './scanner/LangFallbackNote';
 import { useCameraStream } from './scanner/useCameraStream';
 import { useScanPipeline } from './scanner/useScanPipeline';
 import { useStableCallback, useStableHandlers } from './scanner/useStableCallback';
-import AutoAddModal from './scanner/AutoAddModal';
-import DupConfirmModal from './scanner/DupConfirmModal';
+import ScanCorrectModal from './scanner/ScanCorrectModal';
 import ScanMatchesModal from './scanner/ScanMatchesModal';
 import RecentScans from './scanner/RecentScans';
 import { DetectOutline, AutoStatePill, AutoTuningPanel } from './scanner/LiveOverlays';
@@ -29,6 +28,10 @@ import {
   SCAN_MATCH_MIN_SCORE, SCAN_MATCH_MIN_INLIERS, SCAN_MATCH_MIN_MARGIN, CROP_PAD, EMBED_SIZE,
   STEADY_FRAMES_NEEDED, MIN_FILL, SCAN_PROFILES,
 } from './scanner/scanConstants';
+// How many scans the running list keeps. A session's whole run, not just the
+// last few: the list is the record of what was filed.
+const RECENT_SCANS_MAX = 500;
+
 function CameraScanner({ onAddSuccess, showToast }) {
   const { t } = useT();
 
@@ -202,13 +205,15 @@ function CameraScanner({ onAddSuccess, showToast }) {
   const lastScanImgRef = useRef(null);
   const lastScanCroppedRef = useRef(false);
 
-  // Auto-capture duplicate guard: a physical card lingers in frame across the
-  // 3s auto-scan cycle. lastAddedId = the card just auto-added; a repeat match
-  // of it means "same card again" — confirm a real 2nd copy vs a re-scan.
-  // resolvedDupId = a repeat we already settled; skip it silently until a
-  // different card appears (stops a re-prompt loop while it stays in view).
-  const lastAddedIdRef = useRef(null);
+  // Left from the old duplicate prompt; the match picker still clears it. A card
+  // lingering in frame is not re-scanned anyway: the detector only re-arms once
+  // the card in view has changed, so a repeat match is another copy.
   const resolvedDupIdRef = useRef(null);
+  // The card auto-add filed last, and how the scanner was re-armed for the
+  // capture in flight. Together they tell a second copy (the card was lifted
+  // off or swapped, then shown again) from the same card merely nudged.
+  const lastAddedIdRef = useRef(null);
+  const captureRearmedBy = useRef('fresh');
   const beepCtxRef = useRef(null); // reused AudioContext for the scan cue
   const handleCaptureRef = useRef(null); // always the latest handleCapture, for timers
   // Same trick for the capture gate: the metronome interval closes over its first
@@ -335,12 +340,10 @@ function CameraScanner({ onAddSuccess, showToast }) {
   // Drawer states
   const [selectedCard, setSelectedCard] = useState(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [autoAddCountdown, setAutoAddCountdown] = useState(null);
-  const [autoAddTargetCard, setAutoAddTargetCard] = useState(null);
-  // The rest of the ORB list, shown beside the countdown. Scanning a whole set
-  // means many near-identical cards, and the one in hand is regularly not ORB's
-  // first pick — so the runners-up stay one tap away instead of requiring an undo.
-  const [autoAddAlternatives, setAutoAddAlternatives] = useState([]);
+  // A recent-scan tile whose runner-up matches are open for correction. Scanning
+  // a whole set means many near-identical cards, and the one in hand is regularly
+  // not the first pick — so the runners-up stay one tap away on the tile.
+  const [correctingScan, setCorrectingScan] = useState(null);
   // The picker opens compact and expands on request rather than dumping eight
   // cards at once.
   const [showAllMatches, setShowAllMatches] = useState(false);
@@ -353,37 +356,12 @@ function CameraScanner({ onAddSuccess, showToast }) {
   const [findingPrintings, setFindingPrintings] = useState(false);
   const [manualSearchText, setManualSearchText] = useState('');
   const [manualSearching, setManualSearching] = useState(false);
-  // Tap the countdown popup to pause auto-add and tweak these before adding
-  // (slower tiers only — Turbo adds instantly with no overlay).
-  const [autoAddEditing, setAutoAddEditing] = useState(false);
-  const [autoAddCond, setAutoAddCond] = useState('Near Mint');
-  const [autoAddPrint, setAutoAddPrint] = useState('Normal');
-  // Duplicate-scan confirm: set to the repeat-matched card; dupQty = copies to add.
-  const [dupConfirmCard, setDupConfirmCard] = useState(null);
-  const [dupQty, setDupQty] = useState(1);
-
-  // Back / Esc on the match picker and the duplicate prompt (their <Modal>s
-  // own the back guard).
+  // Back / Esc on the match picker (its <Modal> owns the back guard).
   const dismissMatches = () => {
     setScanMatches([]);
     autoArmed.current = true;
     capturedQuad.current = null;
     resolvedDupIdRef.current = null;
-  };
-  const dismissDupConfirm = () => {
-    setDupConfirmCard(null);
-    resolvedDupIdRef.current = null;
-  };
-  // Cancel, Back or Esc on the auto-add popup: drop the card and re-arm.
-  const cancelAutoAdd = () => {
-    setAutoAddTargetCard(null);
-    setAutoAddCountdown(null);
-    setAutoAddAlternatives([]);
-    setAutoAddEditing(false);
-    autoArmed.current = true;
-    capturedQuad.current = null;
-    resolvedDupIdRef.current = null;
-    showToast(t('scan.autoAddCancelled'));
   };
   useBackGuard(!!inspectorEntry, () => setInspectorEntry(null));
   useBackGuard(recentSelect.selectMode, recentSelect.exitSelectMode);
@@ -447,27 +425,6 @@ function CameraScanner({ onAddSuccess, showToast }) {
   // first.
 
 
-  // Auto-Add Countdown Effect
-  useEffect(() => {
-    let intervalId;
-    if (autoAddEditing) {
-      // Paused for manual edit: freeze the countdown, don't fire.
-    } else if (autoAddCountdown !== null && autoAddCountdown > 0) {
-      intervalId = setInterval(() => {
-        setAutoAddCountdown(prev => prev - 1);
-      }, 1000);
-    } else if (autoAddCountdown === 0 && autoAddTargetCard) {
-      const cardToTrigger = autoAddTargetCard;
-      setAutoAddTargetCard(null);
-      setAutoAddCountdown(null);
-      setAutoAddAlternatives([]);   // the choice is made; don't leak it to the next card
-      autoAddCard(cardToTrigger);
-    }
-    return () => {
-      if (intervalId) clearInterval(intervalId);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoAddCountdown, autoAddTargetCard, autoAddEditing]);
 
 
   // What a fresh camera open resets in the scanner itself. These were the first
@@ -483,8 +440,8 @@ function CameraScanner({ onAddSuccess, showToast }) {
     setDebugHashImg('');
     setDebugCandidates([]);
     setDebugScoped(null);
-    lastAddedIdRef.current = null;
     resolvedDupIdRef.current = null;
+    lastAddedIdRef.current = null;
     autoArmed.current = true;
     capturedQuad.current = null;
   };
@@ -499,11 +456,12 @@ function CameraScanner({ onAddSuccess, showToast }) {
   // this component — leaving the scan tab unmounts it, and the unmount cleanup
   // above stops the tracks (which also kills the torch).
 
-  const autoAddCard = async (card, qty = 1, overrides = null) => {
-    // Mark the dup guard BEFORE the await: a fast cooldown can fire the next
-    // capture before this POST resolves, and a match of the same card must hit
-    // the duplicate path instead of auto-adding a second time.
-    lastAddedIdRef.current = card.id;
+  // Files a scanned card straight away — no confirm window, no duplicate prompt:
+  // the camera only scans again once the card in frame has changed, so a repeat
+  // of the same card is another copy being shown. `alternatives` are the runner-up
+  // matches, kept on the tile so a wrong guess is corrected there; `uncertain`
+  // marks a best guess the matcher was not sure of.
+  const autoAddCard = async (card, qty = 1, overrides = null, { alternatives = [], uncertain = false } = {}) => {
     try {
       const autoPrinting = overrides?.printing || ((card.rarity || '').toLowerCase().includes('holo') ? 'Holofoil' : 'Normal');
       const autoCondition = overrides?.condition || 'Near Mint';
@@ -531,15 +489,12 @@ function CameraScanner({ onAddSuccess, showToast }) {
 
       if (response.ok) {
         const data = await response.json();
-        const qtyLabel = qty > 1 ? `${qty}× ` : '';
         const placementLabel = data.placement?.label || null;
-        const cardDisplayName = getCardDisplayName(card.name, autoLanguage, card.printed_name);
-        if (placementLabel) {
-          showToast(t('scan.addedTo', { qty: qtyLabel, name: cardDisplayName, place: placementLabel }));
-        } else if (data.container_full) {
-          showToast(t('scan.addedFull', { qty: qtyLabel, name: cardDisplayName }));
-        } else {
-          showToast(t('scan.autoAdded', { qty: qtyLabel, name: cardDisplayName, set: card.set_name }));
+        // No toast per card: the running list below the camera is the record of
+        // what was added (and where), and a toast per scan buried the camera.
+        // A full container is the one thing worth interrupting for.
+        if (data.container_full) {
+          showToast(t('scan.addedFull', { qty: qty > 1 ? `${qty}× ` : '', name: getCardDisplayName(card.name, autoLanguage, card.printed_name) }));
         }
 
         // Append to recent scans history log. entry_id (the last inserted row)
@@ -550,7 +505,8 @@ function CameraScanner({ onAddSuccess, showToast }) {
           ...card, card_id: card.id, placementLabel, entry_id: data.id, member_ids: data.ids,
           quantity: qty, condition: autoCondition, printing: autoPrinting,
           language: autoLanguage, purchase_price: resolveCardPrice(card, autoPrinting), location_id: null,
-        }, ...prev].slice(0, 10));
+          alternatives, uncertain,
+        }, ...prev].slice(0, RECENT_SCANS_MAX));
 
         // Brief confetti blast for ultra-rares
         const rarity = (card.rarity || '').toLowerCase();
@@ -755,6 +711,21 @@ function CameraScanner({ onAddSuccess, showToast }) {
     })
   );
 
+  // Auto-add's way in. A repeat of the card just filed is another copy when the
+  // card left the frame or was swapped in between; when the same card was only
+  // moved, the detector re-armed on the movement alone, so it is skipped.
+  const fileScan = (card, extra) => {
+    resolvedDupIdRef.current = null;
+    setScanMatches([]);
+    if (card.id === lastAddedIdRef.current && captureRearmedBy.current === 'drift') {
+      setScanStatus(t('scan.sameCardInView'));
+      return;
+    }
+    setScanStatus('');
+    lastAddedIdRef.current = card.id;
+    autoAddCard(card, 1, null, extra);
+  };
+
   const applyMatches = async (matches, notFoundMsg, autoSingle = false) => {
     setScanMatches(matches);
     setShowAllMatches(false);   // each scan's picker opens compact again
@@ -771,34 +742,7 @@ function CameraScanner({ onAddSuccess, showToast }) {
       // Auto-add, not auto-scan: scanning found the card either way. This decides
       // whether it is filed straight away or handed to the add drawer first.
       if (autoAdd) {
-        const id = matches[0].id;
-        if (id === resolvedDupIdRef.current) {
-          // Same card we already handled, still sitting in frame — wait for a
-          // different card before doing anything.
-          setScanMatches([]);
-          setScanStatus(t('scan.sameCardInView'));
-          return;
-        }
-        if (id === lastAddedIdRef.current) {
-          // Repeat of the card just auto-added: could be a real second copy or
-          // just the same card lingering. Make the user decide.
-          setDupConfirmCard(matches[0]);
-          setDupQty(1);
-          setScanMatches([]);
-          return;
-        }
-        // A different card is now in frame — clear the skip guard so the old
-        // resolved-duplicate card is scannable again later.
-        resolvedDupIdRef.current = null;
-        // countdown 0 (Turbo): add immediately, no confirm-modal idle. Higher
-        // tiers show the countdown overlay so the user can cancel a mis-scan.
-        if (profile.countdown === 0) {
-          autoAddCard(matches[0]);
-        } else {
-          setAutoAddTargetCard(matches[0]);
-          setAutoAddCountdown(profile.countdown);
-        }
-        setScanMatches([]);
+        fileScan(matches[0]);
       } else {
         openQuickAdd(matches[0]);
       }
@@ -816,6 +760,10 @@ function CameraScanner({ onAddSuccess, showToast }) {
     capturedQuad.current = lastRawQuad.current;
     capturedSig.current = lastSig.current;
     changedFrames.current = 0;
+    // Snapshot why this capture was allowed, then reset: a re-arm from anywhere
+    // but the detector (a picker closing, the camera reopening) is a fresh start.
+    captureRearmedBy.current = rearmedBy.current;
+    rearmedBy.current = 'fresh';
 
     setLoading(true);
     const scanId = ++currentScanId.current;
@@ -935,13 +883,9 @@ function CameraScanner({ onAddSuccess, showToast }) {
                 // it guessed wrong — and when scanning a whole set, the card in
                 // hand often is not ORB's first choice.
                 const confidentPick = confident && !ambiguousPrinting && !lowMargin && !notInCatalog;
-                // Turbo (countdown 0) adds instantly with no overlay, so there is
-                // nowhere to put alternatives — resolving eight cards per scan
-                // would be pure latency on the fastest tier. Everywhere else the
-                // whole list is resolved, because the countdown shows it.
-                const wanted = (confidentPick && profile.countdown === 0)
-                  ? candidates.slice(0, 1)
-                  : candidates.slice(0, 8);
+                // The runners-up travel with the added card so a wrong guess is
+                // corrected on its tile instead of undone and rescanned.
+                const wanted = candidates.slice(0, 8);
                 // Only announce a fetch if one is actually needed; anything the
                 // server pre-hydrated resolves without a round-trip.
                 if (wanted.some(c => !c.card)) setScanStatus(t('scan.fetchingCandidates'));
@@ -953,15 +897,21 @@ function CameraScanner({ onAddSuccess, showToast }) {
                 setLastMatches(validCandidates);
 
                 if (validCandidates.length > 0) {
-                  // Confident: auto-add the top pick, but keep the rest on screen
-                  // beside the countdown so a wrong guess is one tap to correct
-                  // rather than an undo after the fact.
-                  if (confidentPick && sameCard(validCandidates[0], top)) {
-                    setAutoAddAlternatives(validCandidates.slice(1));
+                  const sure = confidentPick && sameCard(validCandidates[0], top);
+                  // Auto-add files the best guess at once and keeps scanning, even
+                  // when the matcher is unsure: the tile is marked and its runners-up
+                  // are one tap away, which keeps a run moving where a picker would
+                  // stop it on every look-alike printing. The one exception is a
+                  // card no catalog knows — its "matches" are strangers, so they go
+                  // to the picker rather than into the collection.
+                  if (autoAdd && !notInCatalog) {
+                    fileScan(validCandidates[0], { alternatives: validCandidates.slice(1), uncertain: !sure });
+                    return;
+                  }
+                  if (sure) {
                     await applyMatches([validCandidates[0]], '', true);
                     return;
                   }
-                  setAutoAddAlternatives([]);
                   await applyMatches(validCandidates, '', false);
                   // applyMatches clears the status line for a non-empty list, so
                   // this has to land after it.
@@ -1001,11 +951,11 @@ function CameraScanner({ onAddSuccess, showToast }) {
   handleCaptureRef.current = handleCapture;
   // Metronome reads this (not effect deps) to decide whether to fire a capture,
   // so a modal/picker/drawer pauses the beat without restarting the interval.
-  captureBlockedRef.current = isDrawerOpen || scanMatches.length > 0 || !!autoAddTargetCard || !!dupConfirmCard;
+  captureBlockedRef.current = isDrawerOpen || scanMatches.length > 0;
   loadingRef.current = loading;
   const {
     detectQuadStore, autoStateStore, detectStatsStore, detectorDown,
-    autoArmed, capturedQuad, lastRawQuad, lastSig, capturedSig, changedFrames,
+    autoArmed, rearmedBy, capturedQuad, lastRawQuad, lastSig, capturedSig, changedFrames,
     lastCaptureAt, bestFrame, autoScanRef, minFillRef, minSteadyRef, showSettingsRef,
     frameWorthCapturing, refreshAutoState,
   } = useScanPipeline({
@@ -1205,7 +1155,81 @@ function CameraScanner({ onAddSuccess, showToast }) {
   const activateRecent = (item) => {
     if (recentSelect.longPressFired.current) { recentSelect.longPressFired.current = false; return; }
     if (recentSelect.selectMode) recentSelect.toggleSelect(item.entry_id);
+    else if (item.alternatives?.length) setCorrectingScan(item);
     else setInspectorEntry(item);
+  };
+
+  // The foil/normal switch on a scan tile: scanning cannot tell the finish
+  // apart, so this is the one-tap fix. Every row the tile stands for is
+  // re-filed, with the purchase price taken from the new finish (as an add
+  // does). Anything not 'Normal' switches to 'Normal'.
+  const togglePrinting = async (item) => {
+    const next = item.printing === 'Normal' ? 'Holofoil' : 'Normal';
+    const price = resolveCardPrice(item, next);
+    const ids = item.member_ids?.length ? item.member_ids : [item.entry_id];
+    try {
+      const results = await Promise.all(ids.map(id => fetch(`/api/collection/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ printing: next, purchase_price: price }),
+      }).then(async r => (r.ok ? r.json() : null)).catch(() => null)));
+      if (results.some(r => !r)) {
+        showToast(t('scan.errPrinting'));
+        onAddSuccess();
+        return;
+      }
+      const placed = results.find(r => r.placement?.label)?.placement?.label;
+      setRecentScans(prev => prev.map(s => (s.entry_id !== item.entry_id ? s : {
+        ...s, printing: next, purchase_price: price, ...(placed ? { placementLabel: placed } : {}),
+      })));
+      onAddSuccess();
+    } catch (err) {
+      console.error('Printing toggle failed:', err);
+      showToast(t('scan.errPrinting'));
+    }
+  };
+
+  // A tile (or card) as a plain card to offer as an alternative: no entry ids,
+  // which belong to the rows it was saved as, and no nested alternatives.
+  const asAlternative = (c) => {
+    const card = { ...c, id: c.card_id || c.id };
+    delete card.alternatives; delete card.uncertain; delete card.entry_id; delete card.member_ids;
+    return card;
+  };
+
+  // Correct a scan to one of its runners-up: file the chosen card with the same
+  // quantity, condition and printing, then move the wrong rows to the trash.
+  // Add first, delete second, so a failure part-way never loses the copy.
+  const replaceRecentScan = async (item, card) => {
+    try {
+      const response = await fetch('/api/collection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          card_id: card.id, quantity: item.quantity || 1, condition: item.condition, printing: item.printing,
+          language: addLanguage(card), purchase_price: resolveCardPrice(card, item.printing), location_id: null,
+        }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const oldIds = item.member_ids?.length ? item.member_ids : [item.entry_id];
+      const deleted = await Promise.all(oldIds.map(id => fetch(`/api/collection/${id}`, { method: 'DELETE' }).then(r => r.ok).catch(() => false)));
+      if (deleted.some(ok => !ok)) showToast(t('scan.errReplaceCleanup'));
+      // The old pick joins the alternatives, so changing your mind is one more tap.
+      const others = [item, ...(item.alternatives || [])].filter(c => (c.card_id || c.id) !== card.id);
+      setRecentScans(prev => prev.map(s => (s.entry_id !== item.entry_id ? s : {
+        ...card, card_id: card.id, placementLabel: data.placement?.label || null, entry_id: data.id, member_ids: data.ids,
+        quantity: item.quantity, condition: item.condition, printing: item.printing, language: addLanguage(card),
+        purchase_price: resolveCardPrice(card, item.printing), location_id: null,
+        alternatives: others.map(asAlternative),
+        uncertain: false,
+      })));
+      setCorrectingScan(null);
+      onAddSuccess();
+    } catch (err) {
+      console.error('Replace scan failed:', err);
+      showToast(t('scan.errReplace'));
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -1245,7 +1269,7 @@ function CameraScanner({ onAddSuccess, showToast }) {
           ...selectedCard, card_id: selectedCard.id, placementLabel, entry_id: data.id, member_ids: data.ids,
           quantity: parseInt(quantity, 10), condition, printing, language,
           purchase_price: parseFloat(purchasePrice) || 0, location_id: null,
-        }, ...prev].slice(0, 10));
+        }, ...prev].slice(0, RECENT_SCANS_MAX));
 
         const rarity = (selectedCard.rarity || '').toLowerCase();
         const price = selectedCard.price_trend || 0;
@@ -1271,7 +1295,7 @@ function CameraScanner({ onAddSuccess, showToast }) {
   // Handlers for the memoized panels below, stable across renders so a scanner
   // render does not re-render a panel whose own props did not change.
   const stable = useStableHandlers({
-    cancelAutoAdd, autoAddCard, openQuickAdd, dismissDupConfirm, showToast,
+    autoAddCard, openQuickAdd, showToast, replaceRecentScan, togglePrinting,
     dismissMatches, startCamera, handleManualSearch, activateRecent,
   });
 
@@ -1885,27 +1909,6 @@ function CameraScanner({ onAddSuccess, showToast }) {
         </div>
       )}
 
-      {/* Auto Add Countdown Overlay. Tap the card (before the countdown ends) to
-          pause auto-add and adjust condition/printing before it's saved. */}
-      {autoAddTargetCard && (autoAddCountdown !== null || autoAddEditing) && (
-        <AutoAddModal
-          cancelAutoAdd={stable.cancelAutoAdd} autoAddTargetCard={autoAddTargetCard} addLanguage={addLanguage} autoAddEditing={autoAddEditing}
-          setAutoAddCond={setAutoAddCond} setAutoAddPrint={setAutoAddPrint} setAutoAddEditing={setAutoAddEditing} autoAddCountdown={autoAddCountdown}
-          autoAddCond={autoAddCond} autoAddPrint={autoAddPrint} setAutoAddTargetCard={setAutoAddTargetCard} setAutoAddCountdown={setAutoAddCountdown}
-          autoAddCard={stable.autoAddCard} setAutoAddAlternatives={setAutoAddAlternatives} autoAddAlternatives={autoAddAlternatives} openQuickAdd={stable.openQuickAdd}
-          setScanMatches={setScanMatches} setShowAllMatches={setShowAllMatches}
-        />
-      )}
-
-      {/* Duplicate-Scan Confirm Overlay: the just-added card was scanned again. */}
-      {dupConfirmCard && (
-        <DupConfirmModal
-          dismissDupConfirm={stable.dismissDupConfirm} dupConfirmCard={dupConfirmCard} addLanguage={addLanguage} setDupQty={setDupQty}
-          dupQty={dupQty} resolvedDupIdRef={resolvedDupIdRef} setDupConfirmCard={setDupConfirmCard} autoAddCard={stable.autoAddCard}
-          showToast={stable.showToast} setAutoScan={setAutoScan}
-        />
-      )}
-
       {/* Scan Results Suggestions Popup Modal */}
       {scanMatches.length > 0 && (
         <ScanMatchesModal
@@ -1917,10 +1920,20 @@ function CameraScanner({ onAddSuccess, showToast }) {
         />
       )}
 
+      {correctingScan && (
+        <ScanCorrectModal
+          item={correctingScan} addLanguage={addLanguage}
+          onClose={() => setCorrectingScan(null)}
+          onPick={(card) => stable.replaceRecentScan(correctingScan, card)}
+          onEdit={() => { setInspectorEntry(correctingScan); setCorrectingScan(null); }}
+        />
+      )}
+
       {/* Recent Scans History Panel */}
       {recentScans.length > 0 && (
         <RecentScans
           recentSelect={recentSelect} setRecentScans={setRecentScans} recentScans={recentScans} activateRecent={stable.activateRecent}
+          togglePrinting={stable.togglePrinting}
         />
       )}
 

@@ -64,9 +64,10 @@ export const SCAN_PROFILES = [
   // auto-scan, and auto-scan is now driven by the detector: a card is scanned
   // when it is present and still, and not again until it is replaced. Waiting
   // out a preset delay after that only made the scanner feel slow. `countdown`
-  // stays — it is the auto-ADD confirm window, which is a different decision.
-  { label: 'Turbo',    uploadW: 720,  countdown: 0, recallK: 28,  orb: 240 },
-  { label: 'Fast',     uploadW: 800,  countdown: 1, recallK: 60,  orb: 300 },
-  { label: 'Balanced', uploadW: 900,  countdown: 2, recallK: 120, orb: 400 },
-  { label: 'Accurate', uploadW: 1280, countdown: 2, recallK: 250, orb: 500 },
+  // (the auto-add confirm window) went the same way: auto-add files at once and
+  // the running list is where a wrong guess is corrected.
+  { label: 'Turbo',    uploadW: 720,  recallK: 28,  orb: 240 },
+  { label: 'Fast',     uploadW: 800,  recallK: 60,  orb: 300 },
+  { label: 'Balanced', uploadW: 900,  recallK: 120, orb: 400 },
+  { label: 'Accurate', uploadW: 1280, recallK: 250, orb: 500 },
 ];

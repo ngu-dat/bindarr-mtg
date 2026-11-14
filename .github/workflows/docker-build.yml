@@ -224,3 +224,39 @@ jobs:
 
       - name: Inspect published manifest
         run: docker buildx imagetools inspect ${{ steps.image.outputs.name }}:${{ steps.meta.outputs.version }}
+
+  deploy:
+    name: Deploy published image to Bindarr server
+    needs: merge
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Configure restricted SSH access
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.BINDARR_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.BINDARR_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY" || { echo "BINDARR_DEPLOY_SSH_KEY is not configured"; exit 1; }
+          test -n "$DEPLOY_KNOWN_HOSTS" || { echo "BINDARR_DEPLOY_KNOWN_HOSTS is not configured"; exit 1; }
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/bindarr_deploy"
+          chmod 600 "$HOME/.ssh/bindarr_deploy"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Deploy the tested commit image
+        env:
+          DEPLOY_HOST: ${{ vars.BINDARR_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.BINDARR_DEPLOY_USER }}
+        run: |
+          test -n "$DEPLOY_HOST" || { echo "BINDARR_DEPLOY_HOST is not configured"; exit 1; }
+          test -n "$DEPLOY_USER" || { echo "BINDARR_DEPLOY_USER is not configured"; exit 1; }
+          ssh -i "$HOME/.ssh/bindarr_deploy" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy sha-${GITHUB_SHA:0:7}"

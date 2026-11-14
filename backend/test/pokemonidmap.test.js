@@ -158,7 +158,7 @@ check(() => {
 check(() => {
   assert.strictEqual(idMap.parseLegacyId('sv1-1').set_id, 'sv1');
   assert.strictEqual(idMap.parseLegacyId('swsh12pt5gg-GG01').number, 'GG01');
-  for (const id of ['tcgdex-en-sv01-001', 'mtg-0b7c8a9e-1f2d-4e3a-9b8c-7d6e5f4a3b2c', 'pokemontcgapi-sv1-1', 'pokemontcgapi-bs', 'lorcana-crd_1', 'sv1', '', null]) {
+  for (const id of ['tcgdex-en-sv01-001', 'mtg-0b7c8a9e-1f2d-4e3a-9b8c-7d6e5f4a3b2c', 'pokemontcgapi-sv1-1', 'pokemontcgapi-bs', 'lorcana-crd_1', 'eldrazi-repurposer', 'lightning-bolt', 'sv1', '', null]) {
     assert.strictEqual(idMap.isLegacyId(id), false, String(id));
   }
 }, 'pokemontcg.io id shape');

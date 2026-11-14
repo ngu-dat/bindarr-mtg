@@ -105,6 +105,12 @@ async function seed() {
     [cardId, userId, o.printing || 'Normal', o.price ?? null, o.location ?? null, o.compartment ?? null, o.position ?? 0, o.notes || '']);
   let slot = 0;
   for (const card of legacy) await copy(1, card.id, { location: binder, compartment: page.id, position: (++slot) * 1000 });
+  // The v1.8 generic CSV importer made name slugs for unresolved Magic rows and
+  // filed them as Pokémon with no set/number. They are not pokemontcg.io ids and
+  // must not be offered to the Pokémon id migration as e.g. eldrazi-repurposer.
+  await db.run(`INSERT INTO card_cache (id, name, game, set_name) VALUES (?, ?, 'pokemon', 'Imported Set')`,
+    ['eldrazi-repurposer', 'Eldrazi Repurposer']);
+  await copy(1, 'eldrazi-repurposer');
   await copy(1, 'sv1-1', { printing: 'Reverse Holofoil', notes: 'second copy' });
   await copy(1, 'tcgdex-en-sv01-001', { notes: 'added after the switch' });
   for (const id of ['sv1-1', 'sv2-11', 'pgo-11']) await copy(2, id, { price: 0.5 });

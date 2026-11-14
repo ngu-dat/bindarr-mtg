@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  DATA_PREFIX, SHELL_PREFIX, MAX_API, MAX_IMAGES, classifyRequest, dataCacheName, isCacheableApiPath,
-  isCacheableResponse, shellCacheName, staleCaches, trimPlan, userKeyFor,
+  DATA_PREFIX, SHELL_PREFIX, MAX_API, MAX_IMAGES, IMAGE_CACHE_PRUNE_BATCH, classifyRequest, dataCacheName,
+  isCacheableApiPath, isCacheableResponse, shellCacheName, shouldTrimImageCache, staleCaches,
+  trimImagesWhenNeeded, trimPlan, userKeyFor,
 } from './swPolicy.js';
 
 const origin = 'https://bindarr.local';
@@ -92,6 +93,42 @@ test('trim drops the oldest entries past each cap', () => {
   const drop = trimPlan([...images, ...api], { origin });
   assert.deepEqual(drop, [...images.slice(0, 3), api[0]]);
   assert.deepEqual(trimPlan(images.slice(0, 5), { origin }), []);
+});
+
+test('image cache pruning waits for one batch beyond its cap', () => {
+  assert.equal(shouldTrimImageCache(MAX_IMAGES), false);
+  assert.equal(shouldTrimImageCache(MAX_IMAGES + IMAGE_CACHE_PRUNE_BATCH - 1), false);
+  assert.equal(shouldTrimImageCache(MAX_IMAGES + IMAGE_CACHE_PRUNE_BATCH), true);
+  assert.equal(shouldTrimImageCache(MAX_IMAGES + IMAGE_CACHE_PRUNE_BATCH + 1), true);
+});
+
+test('image cache trim is coalesced and reconciles writes that land during a scan', async () => {
+  const state = { count: MAX_IMAGES + IMAGE_CACHE_PRUNE_BATCH, version: 0, trimming: null };
+  let scans = 0;
+  let finishScan;
+  const reconcile = () => {
+    scans += 1;
+    if (scans > 1) return Promise.resolve(MAX_IMAGES);
+    return new Promise((resolve) => { finishScan = resolve; });
+  };
+
+  const first = trimImagesWhenNeeded(state, reconcile);
+  const second = trimImagesWhenNeeded(state, reconcile);
+  assert.equal(scans, 1, 'concurrent requests share a single scan');
+  state.count += 1;
+  state.version += 1;
+  finishScan(MAX_IMAGES);
+  await Promise.all([first, second]);
+
+  assert.equal(scans, 2, 'a write during pruning triggers one final reconciliation');
+  assert.equal(state.count, MAX_IMAGES, 'the completed reconciliation restores the cap');
+});
+
+test('image cache does not scan before a full batch crosses the cap', async () => {
+  const state = { count: MAX_IMAGES + IMAGE_CACHE_PRUNE_BATCH - 1, version: 0, trimming: null, reconcileAgain: false };
+  let scans = 0;
+  await trimImagesWhenNeeded(state, async () => { scans += 1; return MAX_IMAGES; });
+  assert.equal(scans, 0);
 });
 
 test('the policy can be inlined into a classic worker script', () => {

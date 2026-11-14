@@ -18,15 +18,17 @@
 const { matcher, normId, fold } = require('./setCatalogueMatch');
 
 // Every other provider prefixes the ids it mints (see cardApi.js); pokemontcg.io's
-// are a bare `<set>-<number>`. Its set codes are lower-case letters and digits and
-// its numbers carry no dash, which keeps `mtg-<uuid>` and `tcgdex-en-sv01-001` out
-// before the prefix check; pokemonMigration also requires a Pokémon card_cache row.
+// are a bare `<set>-<number>`. Collector numbers always have a numeric component
+// (1, TG01, SWSH001); requiring one also rejects name-slug placeholders such as
+// `eldrazi-repurposer` left by older generic CSV imports. Set codes are lower-case
+// letters and digits and numbers carry no dash, which keeps `mtg-<uuid>` and
+// `tcgdex-en-sv01-001` out before the prefix check.
 const LEGACY_ID = /^([a-z0-9]+)-([^\s-]+)$/;
 const FOREIGN = new Set(['mtg', 'tcgdex', 'pokemontcgapi', 'lorcana']);
 
 function parseLegacyId(id) {
   const m = LEGACY_ID.exec(String(id || ''));
-  if (!m || FOREIGN.has(m[1])) return null;
+  if (!m || FOREIGN.has(m[1]) || !/\d/.test(m[2])) return null;
   return { set_id: m[1], number: m[2] };
 }
 const isLegacyId = (id) => parseLegacyId(id) !== null;

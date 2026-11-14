@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, RefreshCw, ArrowRight, Undo2 } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Undo2 } from 'lucide-react';
 import { useT } from '../utils/i18n';
 
 // pokemontcg.io stops serving on 1 March 2027, and every card an install collected
@@ -15,15 +15,6 @@ const BTN = { display: 'flex', alignItems: 'center', gap: '0.4rem', height: '34p
 const STAT = { background: 'rgba(0, 0, 0, 0.18)', border: '1px solid var(--border-glass)', borderRadius: 'var(--radius-sm)', padding: '0.5rem 0.75rem', minWidth: '9rem' };
 
 const providerName = (t, p) => t(`migration.provider.${p}`);
-
-// Same check CardArtEditor uses: advisory only, the endpoints enforce admin.
-function isAdmin() {
-  try {
-    return JSON.parse(localStorage.getItem('bindarr_user') || 'null')?.role === 'admin';
-  } catch {
-    return false;
-  }
-}
 
 async function readJson(res) {
   return res.json().catch(() => ({}));
@@ -50,26 +41,6 @@ function useMigrationStatus(enabled) {
     return () => { live.current = false; };
   }, [load]);
   return [status, load];
-}
-
-// Dashboard: one line for admins while ids are left, pointing at Admin.
-export function PokemonMigrationNotice({ onNavigate }) {
-  const { t } = useT();
-  const [status] = useMigrationStatus(isAdmin());
-  if (!status || !status.pending || status.pending.ids === 0) return null;
-  return (
-    <div className="glass-panel" style={{ ...PANEL, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: '1rem', padding: '0.85rem 1.1rem' }}>
-      <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-        <AlertTriangle size={16} style={{ color: 'var(--accent-yellow)', flexShrink: 0 }} />
-        {t('migration.notice', { count: status.pending.ids, date: status.sunset, days: status.days_left })}
-      </span>
-      {onNavigate && (
-        <button type="button" className="btn btn-secondary btn-sm" style={BTN} onClick={() => onNavigate('admin')}>
-          {t('migration.review')} <ArrowRight size={14} />
-        </button>
-      )}
-    </div>
-  );
 }
 
 function Counts({ report }) {

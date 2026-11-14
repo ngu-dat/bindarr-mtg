@@ -62,6 +62,19 @@ const chunks = (list, n = CHUNK) => {
   for (let i = 0; i < list.length; i += n) out.push(list.slice(i, i + n));
   return out;
 };
+
+// A provider-shaped id is not proof by itself: older generic CSV imports minted
+// name slugs such as `eldrazi-repurposer` and filed those placeholder rows as
+// Pokémon. If a card_cache row exists, its game, set and collector number must
+// agree with the id. Uncached deck references still use the id shape alone.
+function isMigrationLegacyId(id, cached = null) {
+  const parsed = idMap.parseLegacyId(id);
+  if (!parsed) return false;
+  if (!cached || !cached.cache_id) return true;
+  return String(cached.cache_game || '').toLowerCase() === 'pokemon'
+    && String(cached.cache_set_id || '').toLowerCase() === parsed.set_id.toLowerCase()
+    && idMap.numKey(cached.cache_number) === idMap.numKey(parsed.number);
+}
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const unique = (list) => [...new Set(list)];
 const parseList = (v) => {
@@ -139,12 +152,18 @@ async function legacyReferences(columns) {
   for (const col of columns) {
     if (DERIVED.has(col.key)) continue;
     const c = ident(col.column);
+    const ref = `source.${c}`;
+    const providerPrefixes = ['mtg-%', 'tcgdex-%', 'pokemontcgapi-%', 'lorcana-%'];
     const rows = await db.all(
-      `SELECT ${c} AS id, COUNT(*) AS n FROM ${ident(col.table)}
-        WHERE ${c} IS NOT NULL AND ${['mtg-', 'tcgdex-', 'pokemontcgapi-', 'lorcana-'].map(p => `${c} NOT LIKE '${p}%'`).join(' AND ')}
-        GROUP BY ${c}`
+      `SELECT ${ref} AS id, COUNT(*) AS n, cc.id AS cache_id, cc.game AS cache_game,
+              cc.set_id AS cache_set_id, cc.number AS cache_number
+         FROM ${ident(col.table)} source
+         LEFT JOIN card_cache cc ON cc.id = ${ref}
+        WHERE ${ref} IS NOT NULL AND ${providerPrefixes.map(() => `${ref} NOT LIKE ?`).join(' AND ')}
+        GROUP BY ${ref}, cc.id, cc.game, cc.set_id, cc.number`,
+      providerPrefixes
     );
-    for (const r of rows) if (idMap.isLegacyId(r.id)) add(r.id, col.table, r.n);
+    for (const r of rows) if (isMigrationLegacyId(r.id, r)) add(r.id, col.table, r.n);
   }
   return refs;
 }
@@ -1066,15 +1085,20 @@ async function revert(runId = null) {
 // Cheap enough for every Admin and Dashboard load: local queries only, no provider.
 async function status() {
   const configured = await pokemonProvider.configured();
-  const rows = await db.all(`SELECT c.card_id AS id, c.user_id, COUNT(*) AS n FROM collection c
+  const rows = await db.all(`SELECT c.card_id AS id, c.user_id, COUNT(*) AS n,
+      cc.id AS cache_id, cc.game AS cache_game, cc.set_id AS cache_set_id, cc.number AS cache_number
+      FROM collection c
       JOIN card_cache cc ON cc.id = c.card_id
      WHERE cc.game = 'pokemon' AND c.card_id NOT LIKE 'tcgdex-%' AND c.card_id NOT LIKE 'pokemontcgapi-%'
-     GROUP BY c.card_id, c.user_id`);
-  const decks = await db.all(`SELECT dc.card_id AS id, COUNT(*) AS n FROM deck_cards dc JOIN decks d ON d.id = dc.deck_id
-     WHERE COALESCE(d.game, 'pokemon') = 'pokemon' AND dc.card_id NOT LIKE 'tcgdex-%' AND dc.card_id NOT LIKE 'pokemontcgapi-%'
-     GROUP BY dc.card_id`);
-  const legacy = rows.filter(r => idMap.isLegacyId(r.id));
-  const legacyDecks = decks.filter(r => idMap.isLegacyId(r.id));
+     GROUP BY c.card_id, c.user_id, cc.id, cc.game, cc.set_id, cc.number`);
+  const decks = await db.all(`SELECT dc.card_id AS id, COUNT(*) AS n,
+      cc.id AS cache_id, cc.game AS cache_game, cc.set_id AS cache_set_id, cc.number AS cache_number
+      FROM deck_cards dc JOIN decks d ON d.id = dc.deck_id
+      LEFT JOIN card_cache cc ON cc.id = dc.card_id
+      WHERE COALESCE(d.game, 'pokemon') = 'pokemon' AND dc.card_id NOT LIKE 'tcgdex-%' AND dc.card_id NOT LIKE 'pokemontcgapi-%'
+     GROUP BY dc.card_id, cc.id, cc.game, cc.set_id, cc.number`);
+  const legacy = rows.filter(r => isMigrationLegacyId(r.id, r));
+  const legacyDecks = decks.filter(r => isMigrationLegacyId(r.id, r));
   const ids = new Set([...legacy.map(r => r.id), ...legacyDecks.map(r => r.id)]);
   const runs = await db.all(`SELECT * FROM pokemon_id_migration_runs ORDER BY id DESC LIMIT 5`);
   const days = Math.ceil((Date.parse(`${pokemonProvider.POKEMONTCG_SUNSET}T00:00:00Z`) - Date.now()) / 86400000);

@@ -321,7 +321,11 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
   // (any change elsewhere bumps statsTrigger) keeps the grid as it is until the
   // new rows are in, rather than blanking it to a spinner; and a newer request
   // (switching to Wishlist mid-load) always wins over an older one.
-  const collectionUrl = `/api/collection?list_type=${subTab === 'wishlist' ? 'wishlist' : 'collection'}&fields=grid${tradeOnly ? '&is_trade=1' : ''}`;
+  // Scope selected games at the API instead of fetching their other-game rows
+  // just to discard them in matchesGame below. "All games" keeps the server unfiltered.
+  const collectionUrl = `/api/collection?list_type=${subTab === 'wishlist' ? 'wishlist' : 'collection'}&fields=grid`
+    + (gameFilter ? `&game=${encodeURIComponent(gameFilter)}` : '')
+    + (tradeOnly ? '&is_trade=1' : '');
   const { data: collectionData, loading: firstLoad, refreshing, error: loadError, refetch: fetchCollection, mutate, optimistic } = useApi(
     collectionUrl,
     ({ signal, hasData, push }) => loadCollectionPages(collectionUrl, { signal, push: hasData ? null : push }),

@@ -19,7 +19,6 @@ const DistributionDonut = lazyNamed(charts, 'DistributionDonut');
 import { useApi } from '../utils/useApi';
 import CardInspectorModal from './CardInspectorModal';
 import CardImage from './CardImage';
-import { PokemonMigrationNotice } from './PokemonMigrationBanner';
 import RiotNotice from './RiotNotice';
 import Price from './Price';
 
@@ -176,7 +175,6 @@ function Dashboard({ statsTrigger, onNavigate, onOpenSet, setSelectedLocationId,
   return (
     <div>
       {renderGameTabs()}
-      <PokemonMigrationNotice onNavigate={onNavigate} />
 
       {/* Metrics Summary Grid */}
       <div className="metrics-grid">

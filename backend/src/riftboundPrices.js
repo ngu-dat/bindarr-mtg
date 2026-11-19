@@ -1,13 +1,15 @@
 // TCGplayer prices for Riftbound, from TCGCSV category 89.
 //
 // RiftCodex has no prices, but every card it lists names its TCGplayer product
-// (`tcgplayer_id`, kept as card_cache.tcgplayer_product_id), so the join here is
-// by that product id and nothing else: no set matching, no number matching, no
-// names. That is not caution for its own sake. Riftbound printings share numbers
-// with products worth very different amounts — an OPP promo and its Metal
-// printing carry one collector number and differ about a hundredfold — and a
-// number key would price one off the other with a straight face. A card with no
-// product, or whose product TCGCSV does not quote, is left exactly as it is.
+// (`tcgplayer_id`, kept as card_cache.tcgplayer_product_id), and so does every
+// card of a set RiftCodex lacks, written from this category (riftboundTcgplayer.js).
+// So the join here is by that product id and nothing else: no set matching, no
+// number matching, no names. That is not caution for its own sake. Riftbound
+// printings share numbers with products worth very different amounts — an OPP
+// promo and its Metal printing carry one collector number and differ about a
+// hundredfold — and a number key would price one off the other with a straight
+// face. A card with no product, or whose product TCGCSV does not quote, is left
+// exactly as it is.
 //
 // The data comes through tcgcsvApi's daily sync and its cache, never a request of
 // this module's own: category 89 rides the same pacing, the same 403 cooldown and
@@ -22,7 +24,7 @@
 // price_trend prefers the Normal quote and falls back to the Foil one.
 const db = require('./db');
 const tcgcsv = require('./tcgcsvApi');
-const { recordPrice, shouldSweepPrices, markPricesSwept } = require('./utils/priceHelpers');
+const { recordPrice, shouldSweepPrices, markPricesSwept, WISHLIST_CARDS_SQL } = require('./utils/priceHelpers');
 
 const CATEGORY_ID = 89;
 const GAME = 'riftbound';
@@ -62,6 +64,11 @@ async function updateCollectionPrices(force = false) {
     // A failed or paused sync (network, 5xx, the 403 cooldown) leaves the last
     // complete version in the cache, and yesterday's prices beat none.
     await tcgcsv.syncIfUpdatedSafely('Riftbound price update');
+    // The cards of the sets RiftCodex lacks come from that same data
+    // (riftboundTcgplayer.js): a card TCGplayer listed since is written before the
+    // sweep below prices it. They are an addition; failing them fails no price.
+    await require('./riftboundTcgplayer').ensure({ sync: false })
+      .catch(e => console.warn(`Riftbound: the TCGplayer rows for sets RiftCodex lacks were not refreshed: ${e.message}`));
     if (!force && !(await shouldSweepPrices(GAME))) {
       return { priced: 0, skipped: 'swept recently' };
     }
@@ -79,25 +86,37 @@ async function updateCollectionPrices(force = false) {
     }
 
     const quotes = new Map();
+    let missing = 0;
     for (const group of groups) {
       try {
         quotesByProduct(await tcgcsv.getPrices(CATEGORY_ID, group.groupId), quotes);
       } catch (err) {
         if (!tcgcsv.isCacheMissError(err)) throw err;
+        missing++;
         console.warn(`Riftbound prices: group ${group.groupId} is not cached; its cards keep their prices.`);
       }
+    }
+    // Not one group's prices to read is the same as the category not being cached
+    // at all (above): nothing was priced, so the sweep is not done, and marking it
+    // so would skip a whole interval in silence.
+    if (groups.length && missing === groups.length) {
+      console.warn(`Skipping Riftbound price update: no TCGCSV category ${CATEGORY_ID} prices are cached yet.`);
+      return { priced: 0, skipped: 'not cached' };
     }
 
     // Every listed card, not only owned ones: the requests are per group either
     // way, and a card being browsed is worth a price too. History is recorded for
-    // owned and decked cards only — it is what the trend charts are for, and a
-    // point per catalogue card per day would be most of price_history.
+    // owned, decked and wishlisted cards only — it is what the trend charts and
+    // price alerts read, and a point per catalogue card per day would be most of
+    // price_history.
     const cards = await db.all(
       `SELECT id, tcgplayer_product_id FROM card_cache WHERE game = ? AND tcgplayer_product_id IS NOT NULL`, [GAME]
     );
     const tracked = new Set((await db.all(
       `SELECT card_id FROM collection WHERE game = ? UNION SELECT dc.card_id FROM deck_cards dc
-        JOIN card_cache cc ON cc.id = dc.card_id WHERE cc.game = ?`, [GAME, GAME]
+        JOIN card_cache cc ON cc.id = dc.card_id WHERE cc.game = ?
+       UNION SELECT w.card_id FROM (${WISHLIST_CARDS_SQL}) w JOIN card_cache cc ON cc.id = w.card_id WHERE cc.game = ?`,
+      [GAME, GAME, GAME]
     )).map(r => r.card_id));
 
     let priced = 0;
@@ -125,6 +144,9 @@ async function updateCollectionPrices(force = false) {
     return { priced, unquoted };
   } catch (err) {
     console.error('Error during Riftbound price update:', err.message);
+    // The same report every other sweep makes on the way out; without it a broken
+    // Riftbound sweep was visible only in the server log.
+    require('./notify').emit({ type: 'price_sweep_failed', source: 'riftbound', error: err.message });
     return { priced: 0, error: err.message };
   }
 }

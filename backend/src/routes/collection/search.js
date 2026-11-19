@@ -95,12 +95,15 @@ async function searchCards(req, res) {
     // Every provider takes the same options object and ignores what does not
     // apply to it, so there is one call here rather than a branch per provider.
     const api = await cardApi.apiForGame(game, lang);
+    // A registered game whose provider this build cannot load answers like an
+    // unknown one, not with a 500 from calling into nothing.
+    if (!api) return res.status(400).json({ error: `No card source for game ${game}` });
     // Magic takes Scryfall syntax in the name box (t:creature c:g cmc<=3). It is
     // searched intact, so the name/number splitting above is for plain names only;
     // the number and set fields still apply.
     const syntax = game === 'mtg' ? await scryfallSyntax.forSearch(rawName || q, { prints, image }) : null;
     const fields = syntax ? { ...normalizeSearchParams({ number: rawNumber, set: rawSet }), syntax } : { name, number, set };
-    let { cards, total } = await api.searchCards({
+    let { cards, total, pending } = await api.searchCards({
       ...fields, scope, userId: req.user.id, lang,
       apiKey: req.user.tcg_api_key, allPrints: prints === '1', page, limit,
       filters: pickFilters(query),
@@ -129,10 +132,19 @@ async function searchCards(req, res) {
 
     await attachOwnedQty(cards, req.user.id);
     // Header, not the body: every existing caller expects a bare array here.
+    // X-Catalogue-Pending: the game's card list is still being written in the
+    // background (a TCGplayer-catalogue game's first use on a phone,
+    // tcgcsvGameApi.ensureCatalogue), so an empty answer is not "no such card".
+    const exposed = [];
     if (total != null) {
       res.set('X-Total-Count', String(total));
-      res.set('Access-Control-Expose-Headers', 'X-Total-Count');
+      exposed.push('X-Total-Count');
     }
+    if (pending) {
+      res.set('X-Catalogue-Pending', '1');
+      exposed.push('X-Catalogue-Pending');
+    }
+    if (exposed.length) res.set('Access-Control-Expose-Headers', exposed.join(', '));
     res.json(cards);
   } catch (error) {
     // A query that cannot be read (or that Scryfall refused) is the user's to
@@ -239,7 +251,9 @@ async function cardPrinting(req, res) {
 function register(router) {
   router.all('/search', searchLimiter, searchCards);
   router.get('/collection/cert/:certNumber', searchLimiter, lookupCert);
-  router.get('/cards/:id/printing', cardPrinting);
+  // It asks the card provider for the printing, so it shares search's budget: a
+  // read-only API key could otherwise drive provider calls without any limit.
+  router.get('/cards/:id/printing', searchLimiter, cardPrinting);
 }
 
 module.exports = { register, normalizeSearchParams };

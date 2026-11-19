@@ -4,108 +4,54 @@
 
 # Bindarr
 
-**Self-hosted collection manager for Pokémon, Magic: The Gathering, Disney Lorcana and Riftbound cards.**
+**Self-hosted trading card collection manager.**
 
-Identify cards with your phone camera, track prices, record which binder page and slot each card lives in, and pull decks back out again.
+Scan cards with your phone, track prices, know which binder pocket each card is in, and build decks from what you own.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ngu-dat/bindarr-mtg/docker-build.yml?branch=main&label=CI&logo=github)](https://github.com/ngu-dat/bindarr-mtg/actions/workflows/docker-build.yml)
 [![Docker image](https://img.shields.io/badge/Docker%20image-GHCR-2496ED?logo=docker&logoColor=white)](https://github.com/ngu-dat/bindarr-mtg/pkgs/container/bindarr-mtg)
 [![License: MIT](https://img.shields.io/github/license/thenotoriousJeremy/bindarr?color=blue)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/thenotoriousJeremy/bindarr?style=flat&logo=github)](https://github.com/thenotoriousJeremy/bindarr/stargazers)
-[![Issues](https://img.shields.io/github/issues/thenotoriousJeremy/bindarr)](https://github.com/thenotoriousJeremy/bindarr/issues)
 
-[Upstream live demo](https://thenotoriousjeremy.github.io/bindarr/) · [Install](#install) · [Features](#features) · [How it works](PROJECT.md) · [Report a bug](https://github.com/thenotoriousJeremy/bindarr/issues/new)
+[Upstream live demo](https://thenotoriousjeremy.github.io/bindarr/) · [Install](docs/install.md) · [Docs](#documentation) · [Report a bug](https://github.com/thenotoriousJeremy/bindarr/issues/new)
 
 </div>
 
 ---
 
-https://github.com/user-attachments/assets/4ee6c23f-a024-499b-9fc3-3d144c42ba61
+![Bindarr on three phones: a binder page holding cards from nine games, the collection grid with prices, and the dashboard's value chart](docs/images/hero.png)
 
-The upstream project's [live demo](https://thenotoriousjeremy.github.io/bindarr/) runs the frontend against sample data, so edits aren't saved and scanning is off (it needs a server).
+The [demo](https://thenotoriousjeremy.github.io/bindarr/) runs the real app on sample data. Edits aren't saved and scanning is off.
 
----
+## Games
+
+Pokémon, Magic: The Gathering, Disney Lorcana, Riftbound, Yu-Gi-Oh!, One Piece, Digimon, Flesh and Blood, Star Wars: Unlimited and the Gundam Card Game.
 
 ## Features
 
-- **Camera scanning** — photograph a card and the server identifies it from the image alone. Works for Magic, Pokémon, Lorcana and Riftbound.
-- **Physical location tracking** — binders by page and slot (1–9), boxes by row and divider, with layout and scalable image-list views. Drag cards between pockets to arrange a binder, or file them by tapping on a phone.
-- **Deck Builder & checkout** — build decks, edit their properties, import ManaBox decklists, reserve cards for play, and see exactly which checked-out deck makes a copy unavailable.
-- **Search and bulk add** — search or browse a whole set with multi-select; pin a set and add by collector number one keystroke at a time.
-- **Dashboard** — collection value, 7/30-day trends, rarity and type breakdowns, set completion.
-- **Graded slabs** — record grader, grade and cert number per copy (PSA cert lookup fills them in), and give a slab its own value instead of the raw card's price.
-- **Sealed products** — track purchases and individual opened/unopened units, save reusable contents recipes, link cards to the opened product they came from, and track unopened market value separately from what you paid.
-- **Cards in 11 languages** — search, scan and record Japanese, Korean, Chinese, German, French, Spanish, Italian, Portuguese and Russian printings. A copy references the printing it actually is, so it shows the name and artwork on the card while staying searchable by its English name.
-- **Exports and API** — CSV (TCGplayer-compatible) or JSON, plus a read-only API key for reading net worth from elsewhere.
-- **Multi-user** — session-token auth, admin panel for users and roles, optional public share links.
-- **Phone-only option** — the Android and iOS apps can run without any server, keeping the collection on the phone ([Mobile apps](#mobile-apps)).
-- **11 UI languages**, community-translated.
+- **Camera scanning**: identifies a card from a photo of its artwork, for every game.
+- **Storage**: binders by page and pocket, boxes by row and divider. Drag cards into place, or print your own artwork as pocket inserts.
+- **Prices and value**: market prices, value trends, set completion, graded slab values, and alerts through Discord, ntfy, Apprise or a webhook.
+- **Decks**: build from what you own, check against format rules, and check cards out for play.
+- **Lists**: wishlist, buylists and a deck's missing cards, with what the rest would cost.
+- **Sealed product**: track boxes and packs unit by unit, and link opened cards to them.
+- **Trades and gifts** between accounts on the same server.
+- **Cards in 11 languages**, and the app in 11 languages.
+- **Multi-user**, with OpenID Connect single sign-on and public share links.
+- **Imports and exports**: ManaBox, Moxfield, Archidekt, TCGplayer and Dragon Shield imports; CSV, JSON, full account backups, and a read-only API.
+- **Android and iOS apps**, which can also run on their own with no server.
 
-Architecture, the scan pipeline, and the data model are in [PROJECT.md](PROJECT.md).
-
-## Collection and deck workflows
-
-### ManaBox imports
-
-**Collections:** **Settings → Import Backup** takes a ManaBox `.txt` export, or
-a `.csv` export from ManaBox, Dragon Shield, TCGplayer, Moxfield or Archidekt.
-Columns are matched by name in any spelling. A Scryfall ID picks the exact
-printing, foil and etched copies import as Foil, and rows with a quantity of 0
-are skipped. A file with Magic-only columns (Scryfall ID, Trade Quantity,
-Tradelist Count) is read as Magic; a TCGplayer export names no game, so it is
-read as Pokémon unless it has a Game or Product Line column.
-
-**Decks:** Open **Deck Builder → Create Deck → + Quick Import Decklist**, choose
-**ManaBox text export**, then select the `.txt` export. Bindarr reads the
-filename as the deck name, uses MTG Commander defaults, and resolves each
-printing by its ManaBox set and collector number.
-
-**Storage containers:** In the Storage view, select the upload button beside
-**Create Container**, then choose a ManaBox `.txt` export. Bindarr creates a
-**Box** named from the file (`Black Box.txt` becomes `Black Box`) and files
-matching **Unsorted cards you already own** into its first row. It never adds
-new collection cards during a container import; cards absent from Unsorted are
-reported as not found.
-
-### Deck Builder
-
-Open a deck and select **Edit Properties** to change its name, description,
-format, category, accent color, and target size. A deck's game stays fixed:
-its cards are game-scoped.
-
-Deck cards that cannot currently be used have a red warning. The label shows
-the missing copy count and, when another checked-out deck holds the copy, that
-deck's name — for example, `1 unavailable — Goblin Stampede`.
-
-### Container views
-
-Containers support layout and image-list views. In image-list view, use the
-plus and minus controls to scale card images from 60% to 250%.
-
----
-
-## Install
-
-### Docker (recommended)
-
-No clone, no build. Create a `docker-compose.yml`:
+## Quick start
 
 ```yaml
+# docker-compose.yml
 services:
   bindarr:
     image: ghcr.io/ngu-dat/bindarr-mtg:edge
     container_name: bindarr
     restart: unless-stopped
     ports:
-      - "3001:3001"   # HTTP  — point a reverse proxy here
-      - "3443:3443"   # HTTPS — use this directly if you have no proxy (scanning needs it)
-    environment: {}
-      # All optional — see the table below.
-      # - POKEMON_TCG_API_KEY=       # only if you already have one; pokemontcg.io is deprecated (see below)
-      # - POKEMONTCGAPI_KEY=         # only for the optional pokemontcgapi.com provider (see below)
-      # - PUBLIC_BASE_URL=
-      # - DEFAULT_ADMIN_PASSWORD=
-      # - TRUST_PROXY=1
+      - "3001:3001"   # HTTP, for a reverse proxy
+      - "3443:3443"   # HTTPS, needed to scan from a phone without a proxy
     volumes:
       - bindarr-data:/app/database
 
@@ -113,458 +59,43 @@ volumes:
   bindarr-data:
 ```
 
-Start it:
-
 ```bash
 docker compose up -d
+docker logs bindarr 2>&1 | grep SETUP   # the one-time setup code
 ```
 
-Open `http://localhost:3001`. The first visit asks you to set a password for the
-`admin` account and creates it right there — no password is ever written to the
-logs. (If you set `DEFAULT_ADMIN_PASSWORD` instead, that same `admin` account is
-created at startup and the first visit is a normal login screen.)
+Open `http://localhost:3001`, enter the setup code, and create the admin account. To update, run `docker compose pull && docker compose up -d`.
 
-You can change the password later in Settings. Everything (database, backups, scan models and catalogs, TLS cert) lives in the `bindarr-data` volume.
+To scan cards, download the scan models and a catalog for each game under **Admin → Catalogs**.
 
-Update with `docker compose pull && docker compose up -d`. Your volume is untouched.
+Other ways to run it (prebuilt server binary, mobile apps, building from source) are in [docs/install.md](docs/install.md).
 
-To build from source instead, clone the repo and run `docker compose up -d` — the bundled [`docker-compose.yml`](docker-compose.yml) uses `build:` rather than `image:`.
+## Documentation
 
-#### Which port to use
-
-Both ports serve the same app and the same database. Only the transport differs.
-
-| Port | Use it when |
+| Page | Covers |
 | --- | --- |
-| `3001` (HTTP) | You have a reverse proxy (Caddy, NPM, Traefik, Tailscale Serve) terminating TLS in front, or you're on the host itself at `http://localhost:3001`. |
-| `3443` (HTTPS) | You have no proxy and want to reach Bindarr from a phone. **Card scanning only works here** — browsers refuse camera access over plain HTTP to anything but `localhost`. |
+| [Install](docs/install.md) | Docker, ports and HTTPS, the server binary, the mobile apps |
+| [Configuration](docs/configuration.md) | Environment variables, reverse proxies, single sign-on |
+| [Scanning](docs/scanning.md) | Models, catalogs, accuracy |
+| [Card data and prices](docs/card-data.md) | Where cards and prices come from, graded values, the TCGCSV mirror |
+| [Using Bindarr](docs/using-bindarr.md) | Imports, decks, binders, sealed product, the API |
+| [Backups](docs/backups.md) | Automatic backups, restoring, resetting a password |
+| [MOBILE.md](MOBILE.md) | The mobile apps and running without a server |
+| [PROJECT.md](PROJECT.md) | Architecture and code layout |
+| [PRIVACY.md](PRIVACY.md) | Every service Bindarr contacts, and what it sends |
 
-Publish only the one you use. Behind a proxy, drop the `3443` line and set `TRUST_PROXY=1`.
-
-The HTTPS certificate is self-signed and generated on first start into the volume, so your browser warns once per device (**Advanced → Proceed**; iOS Safari: **Show Details → Visit this website**). Mount a real certificate and set `SSL_CERT_PATH` + `SSL_KEY_PATH` to skip the warning.
-
-This fork publishes multi-architecture images to the [GHCR package](https://github.com/ngu-dat/bindarr-mtg/pkgs/container/bindarr-mtg). Use `edge` to follow `main`; pushes are deployed to the configured server only after the build and smoke tests pass.
-
-#### Image tags
-
-| Tag | Points at |
-| --- | --- |
-| `latest` | newest versioned release |
-| `1.9`, `1.9.0` | a specific release, if you want to control upgrades |
-| `edge` | newest `main` commit from this fork |
-| `sha-<short>` | one exact commit |
-
-### Automatic deployment to a self-hosted server
-
-After a push to this fork's `main` passes the backend/frontend checks, the Docker
-workflow builds and smoke-tests both architectures, publishes the image, then
-connects to the configured server and deploys that exact commit. The server
-creates a database backup before replacing the container and rolls back to its
-previous image if the health check fails. The deployment SSH key is restricted
-to this fixed deploy command.
-
-Configure these repository Actions variables and secret:
-
-| Name | Type | Value |
-| --- | --- | --- |
-| `BINDARR_DEPLOY_HOST` | Variable | Server host or IP |
-| `BINDARR_DEPLOY_USER` | Variable | SSH user with the restricted deploy key (this fork's server uses `root`) |
-| `BINDARR_DEPLOY_KNOWN_HOSTS` | Variable | Verified `known_hosts` line for the server |
-| `BINDARR_DEPLOY_SSH_KEY` | Secret | Private half of the server's restricted Ed25519 deploy key |
-
-Install `scripts/bindarr-ghcr-deploy-ssh` as the forced command and
-`scripts/deploy-bindarr-ghcr.sh` on the server at `/usr/local/sbin`; add the
-public key to `authorized_keys` with `restrict`. The Compose override should
-select `ghcr.io/ngu-dat/bindarr-mtg:edge` by default. The deployment workflow
-passes an immutable `sha-<short>` tag so the server runs the exact image that
-passed CI.
-
-#### Environment variables
-
-All optional.
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `PORT` | `3001` | HTTP port. |
-| `HTTPS_PORT` | `3443` in the image | HTTPS port. Set to `""` for HTTP only. |
-| `SSL_CERT_PATH` / `SSL_KEY_PATH` | — | Your own certificate instead of the generated self-signed one. |
-| `DB_PATH` | `/app/database/bindarr.db` | SQLite file location. |
-| `DEFAULT_ADMIN_PASSWORD` | — | Create the `admin` account with this password at startup instead of letting the first browser visit create the owner account. Only applied while the `users` table is empty — changing it later does nothing to an existing account. |
-| `POKEMON_TCG_API_KEY` | — | **Only for installs still on the pokemontcg.io provider.** Raises its rate limit from 1,000 to 20,000 requests/day. pokemontcg.io is deprecated: [new registrations are closed](https://dev.pokemontcg.io/) and existing keys stop working on **1 March 2027**. New installs default to TCGdex, which needs no key — leave this unset. |
-| `POKEMONTCGAPI_KEY` | unset | Server-side key for the optional [pokemontcgapi.com provider](#pokemon-data-providers). Setting a key alone does not enable it. |
-| `PUBLIC_BASE_URL` | — | External URL behind a proxy, e.g. `https://cards.example.com`. Used for share links and auto-allowed as a CORS origin, so proxied logins work with just this. Also editable in the Admin panel. |
-| `CORS_ORIGIN` | — | Extra allowed origins, comma-separated. Localhost and private-LAN origins are always allowed. |
-| `ALLOW_REGISTRATION` | unset | `true` allows self-registration. Unset means invite-only: admins create accounts. |
-| `OIDC_ENABLED` | `false` | Set to `true` to enable OpenID Connect / SSO login (Authelia, Authentik, Keycloak, etc.). |
-| `OIDC_ISSUER_URL` | — | Base URL of the OIDC provider (e.g. `https://auth.example.com`). **Must be `https`** — `http` is accepted only for `localhost`/`127.0.0.1`. Bindarr accepts the ID token on the strength of the TLS connection it arrives over rather than verifying its signature (permitted for the authorization-code flow by [OIDC Core §3.1.3.7](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation)), so plain HTTP would leave the identity unauthenticated. The discovery document's own `issuer` must also match this value. |
-| `OIDC_CLIENT_ID` | — | OIDC OAuth2 client ID. |
-| `OIDC_CLIENT_SECRET` | — | OIDC OAuth2 client secret. |
-| `OIDC_PROVIDER_NAME` | `Single Sign-On` | Display name shown on the login button (e.g. `Authelia`, `Authentik`, `Keycloak`). |
-| `OIDC_USER_CLAIM` | `preferred_username` | Identity claim to map to the Bindarr username. |
-| `OIDC_AUTO_PROVISION` | `true` | Automatically create a Bindarr member account on first successful SSO login. |
-| `OIDC_ALLOW_USERNAME_LINK` | `false` | Let an SSO identity attach itself to an **existing** Bindarr account that has the same username. Needed to move accounts created before SSO onto it. **Only turn this on if your users cannot choose their own username at the identity provider** — if they can, someone setting theirs to `admin` takes the owner account on their first login. With it off, an SSO login whose username is already taken is refused rather than silently given a second, empty account. |
-| `OIDC_TOKEN_ENDPOINT_AUTH_METHOD` | `client_secret_basic` | Token endpoint client authentication method. Set to client_secret_basic or client_secret_post. |
-| `NODE_EXTRA_CA_CERTS` | — | PEM file of a private root CA to trust, for an identity provider whose certificate it signed. See [SSO with a private CA](#sso-with-a-private-ca). |
-| `TRUST_PROXY` | — | Number of proxy hops (usually `1`) when a reverse proxy terminates TLS, so rate limiting sees the real client IP. |
-| `CSP_REPORT_ONLY` | unset | The Content-Security-Policy is enforced, so the browser blocks scripts that are not Bindarr's own and card images from hosts it does not list. If card art stops loading after a provider moves to a new image host, set `true` until Bindarr is updated. The policy is then only reported in the browser console. |
-| `NOTIFY_ALLOW_PRIVATE` | unset | `true` lets notification channels reach loopback and private-LAN addresses, such as an ntfy or Apprise server on your own network. Unset, those are refused so an account cannot use notifications to probe the server's network. Link-local stays blocked. |
-| `CV_MODEL_DIR` | `/app/database/models` in the image | Where the scan models and catalogs live. Must be on persistent storage, or an image update discards every catalog you built. |
-| `CV_SCAN_GAP` | `0.10` | How far a match must stand above its runner-ups before it counts as an answer rather than "this card is not in the catalog". Lower accepts more guesses. |
-| `BACKUP_DIR` | `backups/` beside `DB_PATH` | Where automatic, manual and pre-upgrade snapshots are written, listed and downloaded from. See [Backup and restore](#backup-and-restore). |
-| `BACKUP_INTERVAL_HOURS` | `24` | Automatic database snapshot interval, `0.25`–`8784`. `0` disables. Counted from the last backup, which is kept in the database, so restarts do not delay it. An unreadable value falls back to `24` with a warning in the log. |
-| `BACKUP_KEEP_LAST` | `10` | How many regular snapshots to retain. Pre-upgrade snapshots are kept separately (the newest 3). |
-
-#### SSO with a private CA
-
-Register `<PUBLIC_BASE_URL>/api/auth/oidc/callback` as the redirect URI at your identity provider (e.g. `https://cards.example.com/api/auth/oidc/callback`). Without `PUBLIC_BASE_URL` it is built from the request's host; `OIDC_REDIRECT_URI` overrides it outright.
-
-The Android and iOS apps use that same redirect URI: SSO opens in the system browser, and the server's callback hands the login back to the app through the `bindarr://oidc` link with a one-time code. There is no extra redirect URI to register at the provider.
-
-In the browser the callback never puts a session in the URL either. It returns a one-time code that only the browser which started the login can redeem, using a short-lived cookie set when the login began. Start SSO from the address your redirect URI points at (`PUBLIC_BASE_URL`, when it is set). A login started on another address cannot be finished.
-
-If the provider's certificate is signed by your own root CA, SSO login fails with `fetch failed` and the container log names a certificate error such as `UNABLE_TO_VERIFY_LEAF_SIGNATURE` or `SELF_SIGNED_CERT_IN_CHAIN`. Node ships its own CA list and does not read the operating system's certificate store, so adding the CA to the container's system store does not help. Mount the CA's PEM file and point `NODE_EXTRA_CA_CERTS` at it:
-
-```yaml
-    environment:
-      - NODE_EXTRA_CA_CERTS=/certs/root-ca.pem
-    volumes:
-      - bindarr-data:/app/database
-      - ./root-ca.pem:/certs/root-ca.pem:ro
-```
-
-Node reads this variable once at startup, so set it in the container or process environment. A `.env` file read by the server does not work for it.
-
-`GET /api/health` returns `200 {"status":"ok"}` with no auth and backs the image's `HEALTHCHECK`.
-
-### Prebuilt server binary
-
-If you'd rather not run Docker, every release ships a self-contained server. Download it from the [latest release](https://github.com/thenotoriousJeremy/bindarr/releases/latest), unpack, run, then open `http://localhost:3001`.
-
-| OS | File | Run |
-|----|------|-----|
-| Windows | `Bindarr-Server-windows-x64.zip` | unzip, double-click `bindarr-server.exe` |
-| Linux | `Bindarr-Server-linux-x64.tar.gz` | `tar xzf`, then `chmod +x bindarr-server && ./bindarr-server` |
-| macOS (Apple Silicon) | `Bindarr-Server-macos-arm64.tar.gz` | `tar xzf`, then `chmod +x bindarr-server && ./bindarr-server` |
-
-The first visit in a browser asks you to create the owner account. The SQLite file is created next to the binary. To set variables from the table above, create `app/backend/.env` before the first run — HTTPS is off by default here, so add `HTTPS_PORT=3443` if you want to scan from a phone.
-
-### Mobile apps
-
-`Bindarr-Android.apk` is attached to each release (allow "install from unknown sources"). iOS goes out through TestFlight.
-
-The sign-in screen asks where Bindarr should run:
-
-- **My server** connects the app to a Bindarr server you run (one of the options above).
-- **This device** needs no server at all. Bindarr runs inside the app and keeps your collection on the phone, with no account to create. Search, collection, storage, decks, notes, stats and prices all work, using the internet only to reach the card databases. Magic and Pokémon cards can be scanned after a one-time download of scan data (about 62 MB for Magic, 21 MB for Pokémon). Share links, multiple accounts and scanning Lorcana cards need a server. Export a full backup from Settings now and then, because the phone holds the only copy; importing that backup on a server later moves the whole collection there. Details are in [MOBILE.md](MOBILE.md#device-mode-no-server).
-
-If your server's certificate comes from your own (private) CA, install that CA certificate on the phone first:
-
-- **Android:** Settings → Security → Encryption & credentials → Install a certificate → CA certificate. The app trusts user-installed CAs.
-- **iOS:** install the CA profile, then turn on full trust for it under Settings → General → About → Certificate Trust Settings.
-
----
-
-## Riftbound
-
-Riftbound (Riot Games' League of Legends trading card game, published by UVS
-Games) is the fourth game. Card data comes from [RiftCodex](https://riftcodex.com),
-a free community API with no key: the whole catalogue (~1.5k cards, English only)
-is fetched the first time anything needs a Riftbound card, cached, and refreshed
-weekly — and never on an install that has not used Riftbound. Card art is
-hotlinked from Riot's own CDN (`cmsassets.rgpub.io`); none is bundled. Prices are
-TCGplayer market prices via TCGCSV (category 89), matched by each card's TCGplayer
-product id. Scanning works once a Riftbound catalog is built in Admin → Catalogs;
-battlefields are matched as printed, in landscape. Riftbound decks are checked
-against Riot's construction rules (one Champion Legend, a 40+ Main Deck with the
-Chosen Champion, three of a card, twelve runes, three different battlefields,
-domain identity) and shown as warnings. `RIFTCODEX_BASE_URL` overrides the API
-host. Riftbound is hidden in the store-distributed mobile app: Riot's fan policy
-does not allow its IP in App Store or Google Play apps without a licence or an
-approved Riot API key.
-
-Bindarr was created under Riot Games' "Legal Jibber Jabber" policy using assets
-owned by Riot Games. Riot Games does not endorse or sponsor this project.
-
-## Pokémon data providers
-
-Choose the Pokémon provider under **Admin → Instance Settings**. New installs
-still use TCGdex, and upgrades keep the provider already configured.
-
-| Provider | Printings served | Key |
-| --- | --- | --- |
-| TCGdex | All existing Pokémon language choices, subject to its catalogue coverage | None |
-| pokemontcg.io (deprecated) | English; other languages use TCGdex | Optional `POKEMON_TCG_API_KEY`. Registrations are closed and keys stop working on 1 March 2027; an install still on it gets a warning in the server log at every boot |
-| pokemontcgapi.com (optional) | English, Japanese and Simplified Chinese; other languages use TCGdex | Required `POKEMONTCGAPI_KEY` |
-
-### Before 1 March 2027: migrate pokemontcg.io card ids
-
-pokemontcg.io stops serving on **1 March 2027**. Every card your install
-collected while it was the provider is keyed by a pokemontcg.io id (`sv1-1`),
-and switching provider does not change those: after a switch the same set shows
-up twice (`sv1-*` and `tcgdex-en-sv01-*`), and after the shutdown the old half
-can no longer be refreshed or priced.
-
-**Admin** shows a migration panel while any such ids remain (admins also get a
-one-line notice on the Dashboard):
-
-1. **Preview migration** matches every pokemontcg.io id your data references
-   against TCGdex (or pokemontcgapi.com, if that is your provider) by set and
-   collector number, cross-checked by card name and TCGplayer product id. It
-   changes nothing and lists what can move, what is ambiguous and what has no
-   match, with who owns each card that cannot move.
-2. **Migrate N cards** takes a database backup, then re-keys collection,
-   decks, price history, product links, uploaded card art and any other table
-   holding card ids, in one transaction. Binder fixed slots and set rules move
-   with their set when that is safe. An install still on pokemontcg.io is
-   switched to TCGdex at the same time. Card details are then refreshed from
-   the new provider in the background.
-3. **Undo migration** reverses the newest run from its log. The backup it took
-   is listed under Admin → Backups; download it if you want to keep it past the
-   backup rotation.
-
-Ambiguous and unmatched cards stay on their old ids. Re-running is safe: it
-moves only what is left and retries any card details that failed to refresh.
-After migrating, rebuild the English Pokémon scan catalog (Admin → Catalogs) so
-scans return the new provider's cards.
-
-### pokemontcgapi.com
-
-To enable pokemontcgapi.com, set `POKEMONTCGAPI_KEY` in the **backend server's**
-environment and restart it, then select **pokemontcgapi.com** and save in the
-Admin panel. For Docker, add `POKEMONTCGAPI_KEY: ${POKEMONTCGAPI_KEY}` under the
-service's `environment` mapping. This key is separate from the pokemontcg.io key
-in personal Settings and is never returned to the browser. Setting the key alone leaves the
-provider disabled.
-
-The optional provider supports set browsing, name and collector-number searches,
-card lookup, artwork, and caching cards for local scan catalogs. Japanese and
-Simplified Chinese searches use their own physical release lines, not translated
-Western sets. The API can fall back to English names, and Chinese printed names
-are not currently supplied. Traditional Chinese and all other existing language
-choices continue through TCGdex.
-
-Prices prefer an ungraded Cardmarket quote in EUR, then TCGplayer in USD, for the
-printing's language. Printing-specific columns always use the same source and
-currency as the representative price. The inspector names the source; there is
-no currency conversion. Unavailable or plan-withheld prices remain absent,
-including the currently unpriced Simplified Chinese catalogue. TCGCSV continues
-to price existing providers' cards, but does not overwrite these quotes.
-
-Requests use up to 250 cards per page, cursor pagination, a persistent response
-cache and conditional ETag requests. Normalized cards also live in `card_cache`.
-
-The API meters credits, and prices are what cost them: a 250-card page is one
-credit without prices and about forty with them (measured 10 Sep 2026). So
-browsing and searching fetch names and artwork only, and a card is priced at the
-two moments the app shows a value: when it enters your collection (two credits for
-that card) and in the automatic refresh of owned or decked cards (batched, about
-one credit per six cards). That refresh only asks about cards whose stored price
-is older than three days, and it runs as often as **Admin → Instance Settings →
-Refresh prices** says: daily by default, down to every 30 days or never (see
-[How often prices refresh](#how-often-prices-refresh)). Search results therefore
-show no price until a card is added. A full catalogue build of a language costs roughly one credit per 250
-cards (Japanese, the largest release line, is under 100 credits), so check the
-account's quota before building a whole language. An outage serves matching
-cached cards or reports an error; it does not silently switch ID namespaces.
-
-Switching provider keeps existing collection entries and their IDs. Existing scan
-catalogs remain usable; rebuild the relevant language catalog to include the new
-provider's cards. This is an alternative an admin can select when another provider
-is unavailable, not automatic failover or a migration of existing cards.
-
-API contract and coverage: [documentation](https://pokemontcgapi.com/docs),
-[OpenAPI](https://pokemontcgapi.com/openapi.json),
-[regional coverage](https://pokemontcgapi.com/coverage).
-
-## Card scanning
-
-Scanning is image-only — no OCR, no typing. Two things have to be in place, and
-neither ships inside the app:
-
-**1. The models.** Two small neural networks (~9.6 MB together) find the card in
-the frame and turn its artwork into a fingerprint. They are AGPL-3.0 while Bindarr
-is MIT, so they are fetched deliberately rather than bundled:
+## Contributing
 
 ```bash
-docker exec bindarr node scripts/fetch-models.mjs
+npm run install:all   # Node 22.12+ (24 recommended, see .nvmrc)
+npm run dev           # frontend https://localhost:5173, backend http://localhost:3001
+npm test
 ```
 
-(Running from source or the prebuilt binary: `node scripts/fetch-models.mjs` in
-`backend/`.) Restart afterwards. Until they are there, the server says so at
-startup and scanning returns a clear error instead of guesses.
-
-**2. A catalog.** The fingerprint has to be compared against something. Build one
-per game and language from **Admin → Catalogs**: it downloads that game's card
-list and fingerprints every card's artwork — hours for a full English game, and
-about 5 MB of output per 10,000 cards. Progress is live, stopping keeps what it
-has, and resuming reuses it. `--catalogs` on the fetch command above grabs
-prebuilt English Magic and Pokémon catalogs instead, which answer immediately but
-only resolve cards your install has already seen.
-
-Scanning is then the same whether or not you tell it which set you are feeding.
-Naming the set just restricts the comparison to that set's cards, which is faster
-and more accurate, and needs no preparation.
-
-Coverage is only as good as the card data available for a language: the panel shows
-what a catalog holds against what the provider claims exists, e.g. *3,297 of
-16,192* for Japanese Pokémon, where the upstream data simply stops. A card outside
-the catalog is reported as missing rather than guessed at, with the nearest matches
-offered underneath.
-
-The pipeline, its accuracy numbers, and the measurement harness are documented in
-[PROJECT.md](PROJECT.md#image-identification-pipeline).
-
----
-
-## Card values
-
-Every price source Bindarr talks to — TCGplayer, Scryfall, Cardmarket — quotes the **raw** card. A PSA 10 sells for a multiple of that, so a graded copy needs its own number, and each copy can carry one: open the card, edit it, and set **Value for this copy**. That value replaces the market price everywhere — net worth, set totals, sorting by price, exports. Clear the field to go back to the card's own price.
-
-For Pokémon slabs it can also be fetched. Put a [PokemonPriceTracker](https://www.pokemonpricetracker.com/api) key in **Settings → API Keys** and a **Fetch graded price** button appears on graded copies. It fills in what that card sells for on eBay at that grade — PSA, BGS or CGC, half grades included — and says how many sales the figure rests on. If the grade has no recorded sales it tells you which grades do, rather than guessing.
-
-One card per press, never a background sweep: each lookup spends 2 of the free tier's 100 daily credits, and a sweep over a collection would spend a week's worth on one boot. Magic slabs have no source, so they stay hand-entered.
-
-### Cards in other languages
-
-Which marketplace can price a printing depends on where it is sold, so the source follows the card:
-
-| Card | Priced from |
-| --- | --- |
-| Magic, any language | Scryfall — TCGplayer's USD price, or Cardmarket's EUR one when TCGplayer has no listing (most non-English printings). **Admin → Instance Settings → Magic price source** flips this to Cardmarket EUR first, TCGplayer USD as the fallback |
-| Pokémon via pokemontcgapi.com | Cardmarket EUR when available, otherwise TCGplayer USD, for the printing's language |
-| Pokémon via existing providers, English or Japanese | TCGplayer, via TCGCSV, in USD |
-| Pokémon via existing providers, other languages | the **English** printing's TCGplayer price, labelled as such — TCGplayer runs no German, Korean or Chinese catalogue |
-
-Prices are stored in the currency they were quoted in and never converted — an exchange rate is a live number Bindarr has no source for — so each card shows its own symbol (`$4.50`, `€4.50`) and the card inspector names the marketplace. Collection totals sum the currencies as-is; `currencies` in the API response says when a total is mixed.
-
-A price only exists once something fetched it. The Pokémon price sweep covers the sets you own cards from, so browsing a set you own nothing in shows `0.00` until a card from it lands in your collection.
-
-### Sealed products
-
-The **Sealed** page tracks purchases as individual units, so opening one booster box does not mark every identical box as opened. Pick products from the TCGplayer catalog or enter a name manually. For products with guaranteed contents, save a recipe of cards and child products; recipes are shared across the Bindarr instance: any user can create one or use another's, only its creator or an admin can edit or delete it, and edits update existing as well as future purchases. Set a product's total cards per unit in its recipe once, rather than entering it on each purchase. This total can also be saved without recipe components for products such as loose booster packs.
-
-A purchase can be made available to all users. While shared, everyone can see its purchase details—including store, date, quantity, cost, and buyer—and any unopened, unclaimed units. The first user to open a unit claims it and receives its recipe contents. By default, only that user can see the opened unit and its linked cards; the buyer can use the **Show items claimed by other users** filter to see claimed unit rows and who opened them, but not their linked cards. The buyer remains the only one who can edit purchase details. Sharing can be toggled on an individual purchase or changed for selected purchases. Resealing a claimed unit does not return it to the shared pool. In a multi-unit purchase, the bulk-open control is above the individual unit actions.
-
-Link-card progress counts the actual linked cards on a unit and its child products. The recipe's expected-card total can include cards outside its listed contents, such as energies added later. Once the linked count reaches or exceeds that total, the opened product no longer appears in the collection's picker for linking cards. Use the collection's Sealed Product filter to view unlinked cards or cards linked to selected units.
-
-Search purchases by product, set, store, notes, or expansion. Filters narrow the list by game, product type, purchases with sealed or opened units, and expansion. The **Show items claimed by other users** option reveals claimed units in purchase history. Expansions include the purchase's own set and the sets of cards or products in its recipe.
-
-Purchase cost and market value are separate. Set a per-unit value manually for any product, or refresh a catalog-linked product from TCGCSV. The sealed inventory summary totals market value only for units that are still unopened; values are not automatically refreshed in the background.
-
-### How often prices refresh
-
-Owned and decked cards have their prices re-fetched automatically, and only where the stored price has aged past three days — a sweep never re-asks about a card it refreshed yesterday. **Admin → Instance Settings → Refresh prices** sets how often that runs: daily (the default), every 3 days, weekly, every 30 days, or never.
-
-Daily is what the free providers publish, so leave it there unless you have a reason. Turn it down if you are on a provider that charges per card refreshed, or if you have a very large collection and only look at its value occasionally. **Never** stops automatic refreshes entirely; prices already stored stay as they are.
-
-### TCGCSV data sync
-
-Bindarr downloads TCGCSV data (from the project's mirror, below) and stores it in the local SQLite database; app and catalog operations use that cache instead of fetching data for each request. At startup and during scheduled work, Bindarr checks TCGCSV's `last-updated.txt` no more than once every 24 hours and only downloads a new dataset when the timestamp advances. A new dataset is staged until the full sync succeeds, so the last complete cache remains available if a refresh fails, and price refreshes keep using it. Only the Pokémon categories (3 and 85) are synced, plus Riftbound (89) when a collection or list holds a Riftbound card and Magic (1) and Lorcana (71) sealed product when an admin turns that on; that is about 1 + 2 × (number of sets) requests per category per new dataset, and only the fields Bindarr reads are stored. A set that TCGCSV answers with a 404 or an error is recorded as empty rather than blocking the sync; a dataset that still has not completed after 24 hours is abandoned and `last-updated.txt` is checked again.
-
-Outbound requests are serialized and spaced by at least 100 ms. If TCGCSV returns HTTP 403, Bindarr logs the response and pauses further TCGCSV requests for 24 hours.
-
-To route all Bindarr TCGCSV traffic through a reverse-proxy/read-through cache, set the server-side `TCGCSV_BASE_URL` environment variable to its base URL (for example, `http://tcgcsv-cache:8080`). The cache must serve `last-updated.txt` and the `/tcgplayer/...` endpoints. This setting covers sync, catalog, and price-refresh requests; it defaults to the project's mirror (below). Configure it in the server's environment or Docker Compose, not in the browser app.
-
-### TCGCSV mirror
-
-TCGplayer prices come from [TCGCSV](https://tcgcsv.com), a free service run by one person. Every install syncing from it separately added up to enough traffic that TCGCSV blocked Bindarr's User-Agent ([#102](https://github.com/thenotoriousJeremy/bindarr/issues/102)), and its maintainer asked for one shared copy instead. So one scheduled job in this repository syncs from TCGCSV once a day, politely, and publishes the result with TCGCSV's own path layout to the `tcgcsv-mirror` branch:
-
-```sh
-https://raw.githubusercontent.com/thenotoriousJeremy/bindarr/tcgcsv-mirror
-```
-
-Since 1.9 this is the default, and installs never contact tcgcsv.com. It carries every category Bindarr syncs: Pokémon (3, 85) and Riftbound (89) as TCGCSV serves them, and Lorcana (71) and Magic (1) reduced to sealed product and its prices. Older releases default to tcgcsv.com, whose 403s they wait out; set `TCGCSV_BASE_URL` to the URL above on those, or upgrade. Please don't point `TCGCSV_BASE_URL` back at tcgcsv.com. The sync script and workflow are `scripts/tcgcsv-mirror/sync.mjs` and `.github/workflows/tcgcsv-mirror.yml`.
-
-## API access
-
-For reading your collection from somewhere else — a finance tracker, a dashboard widget, a script — generate a key under **Settings → API Keys** and send it as a Bearer token:
-
-```bash
-curl -H "Authorization: Bearer <key>" http://localhost:3001/api/stats/networth
-```
-
-```json
-{ "totalValue": 4210.55, "totalSpent": 2980.00, "gain": 1230.55, "gainPct": 41.3,
-  "totalCards": 812, "uniqueEntries": 604,
-  "byGame": { "pokemon": { "cards": 500, "value": 3100.20 }, "mtg": { "cards": 312, "value": 1110.35 } },
-  "currencies": ["USD"], "asOf": "2026-08-17T17:55:40.898Z" }
-```
-
-The key never expires and is **read-only**: any request that is not a GET is refused, and admin endpoints are refused outright. Add `?game=pokemon` to scope the figures. `/api/stats` returns the full dashboard payload if you want the breakdowns too, and `/api/collection` returns every card. More than one entry in `currencies` means providers quoted in different currencies and the total sums them as-is.
-
-Revoking is one click in the same panel; anything using the old key stops immediately.
-
-## Arranging a binder
-
-A container set to **Custom** order files by hand rather than by a sort scheme. Drag a card from the Unsorted queue into a pocket to file it, drag a filed card to another pocket to move it (drop it on an occupied pocket and the two swap), and drag one back to the Unsorted queue to take it out of the binder.
-
-Dragging is mouse-only — on a phone a drag would fight the page-swipe, so touch files by tapping instead: turn on **Arrange**, tap the card, tap the pocket. Both routes go through the same placement rules, so a locked or full container refuses either way.
-
-## Binder artwork
-
-Open a binder page and choose **Artwork** to decorate it with a picture of your own. Upload a JPEG, PNG or WebP (up to 12 MB), then drag it into place, set its width and rotation, and pick **Left page**, **Right page** or **Both pages** for a spread. Tap a pocket to switch it between artwork and a card. Set the insert size (63 × 88 mm by default) and the spacing between your pockets so the print lines up with your pages.
-
-**Print** lays out only the artwork pockets, each at its real size, with corner cut marks and optional labels saying which page, row and column each insert goes in. Choose A4 or US Letter, print at 100% with *Fit to page* off, and check that the line marked 50 mm measures 50 mm. *Save as PDF* in the print dialog gives you a file.
-
-Artwork pockets show their piece of the picture whenever they are empty, including on a shared binder. Artwork never counts as a card. Images live in `binder-art/` beside the database; back that folder up with it.
-
-## Backup and restore
-
-Everything is in one SQLite file (`DB_PATH`, in the `bindarr-data` volume under Docker).
-
-Bindarr snapshots the database itself every 24 hours into a `backups/` folder beside it (`BACKUP_DIR` moves it), keeping the last 10. That runs while the server is live and needs no downtime. The time of the last backup is kept in the database, so an install that restarts more often than daily still gets one. Each snapshot is written under a temporary name, checked with SQLite's `quick_check`, and only then renamed to `.bak`: a backup that ran out of disk or was interrupted is deleted and logged, never left looking like a good one, and older backups are not touched. **Admin → Database Backup** lists the same folder and can take one on demand.
-
-Before a new release migrates the schema of a database that holds data, it first writes `pre-migration-bindarr-<old>-to-<new>-<time>.bak` there. The newest three are kept, separately from the regular rotation. If that snapshot cannot be written (an unwritable `BACKUP_DIR`, a full disk), the log says so loudly and startup continues with the regular backups untouched. To roll an upgrade back, restore the pre-migration file with the release named first in its name.
-
-`docker stop` (or Ctrl+C) shuts Bindarr down cleanly: it stops taking requests, gives a running backup, price sweep or catalog build a few seconds to reach a safe point, then closes the database, which folds the WAL back into `bindarr.db`. A second signal stops it at once. Background work — the backup, the weekly set refresh, the hourly price check and TCGCSV sync — runs on schedules kept in the database, so a restart neither delays nor repeats it, and anything that fell due while the server was down runs shortly after it starts.
-
-For an off-box copy, stop the container first so the WAL is checkpointed:
-
-```bash
-docker run --rm -v bindarr-data:/data -v "$PWD":/backup alpine cp /data/bindarr.db /backup/
-```
-
-Restore by dropping the file back into the volume with the container stopped. Individual users can also export their own account from the app: **Export full backup** (Settings → Collection Backup) holds everything they own — storage and where each copy sits, decks, notes, and the card data behind them — and **Import Backup** restores it, here or on another Bindarr, replacing what the account has. On a member's account, the card details are looked up again from the card databases rather than taken from the file, so restoring there needs internet access; an admin's restore uses the file's copy. CSV and JSON exports remain for spreadsheets and other apps.
-
-**Lost the admin password?** Reset it from the command line. Your collection stays as it is:
-
-```bash
-docker exec -it bindarr node scripts/reset-password.js admin
-```
-
-This prints a new random password, or uses one you pass with `-e NEW_PASSWORD=...`. It also signs that account out of every session. It works for any username, and exits non-zero if there is no such user. If you run it as root, the script switches to the user that owns the database first, so it cannot leave files the server is unable to write. Without Docker, run `node scripts/reset-password.js <username>` from the `backend` folder; it reads the same `DB_PATH` and `.env` as the server. `DEFAULT_ADMIN_PASSWORD` will not change an existing account. It is only used when no accounts exist.
-
-> **Upgrading from before v1.5.0:** the database file was renamed `pokemon_cards.db` → `bindarr.db`. First start renames it automatically, sidecars included. Old `pokemon_cards.*.bak` backups still restore.
-
----
-
-## Development
-
-Node 22.12+ and npm 10+. Node 24 is what the Docker image and CI run, so it is the one to use if you can.
-
-```bash
-npm run install:all
-npm run dev
-```
-
-Frontend at `https://localhost:5173` (self-signed HTTPS, so the camera works), backend at `http://localhost:3001`.
-
-To test scanning from a phone, put it on the same Wi-Fi and open `https://<your-computer-ip>:5173`, then accept the certificate warning (**Advanced → Proceed**).
-
-Tests: `npm test`. Frontend lint (matches CI, fails on any warning): `cd frontend && npm run lint`. Code layout and conventions: [PROJECT.md](PROJECT.md).
-
----
-
-## Translating
-
-Bindarr speaks English, Brazilian Portuguese, French, German, Italian, Japanese, Korean, Russian, Simplified Chinese, Traditional Chinese and Spanish. More are welcome, and it doesn't require writing code: copy [`frontend/src/locales/en.json`](frontend/src/locales/en.json), translate the text after each `:`, open a pull request. Partial files are fine — anything missing falls back to English key by key.
-
-Details, including placeholder and plural rules, in [docs/TRANSLATING.md](docs/TRANSLATING.md).
-
-This is the language of the *app*. The language a card was printed in is a separate per-card field.
-
----
+See [CONTRIBUTING.md](CONTRIBUTING.md). Translations need no code: see [docs/TRANSLATING.md](docs/TRANSLATING.md).
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). The scan models are AGPL-3.0 and are downloaded separately.
+
+Bindarr was created under Riot Games' "Legal Jibber Jabber" policy using assets owned by Riot Games. Riot Games does not endorse or sponsor this project.

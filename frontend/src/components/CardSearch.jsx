@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Search, Plus, X, ShieldAlert, Check, MousePointerClick, Zap, Undo2, Maximize2 } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import Price from './Price';
 import { resolveCardPrice } from '../utils/resolveCardPrice';
 import CardEntryFields from './CardEntryFields';
@@ -20,6 +19,7 @@ import { onActivateKey, useEscape } from '../utils/a11y';
 import RiotNotice from './RiotNotice';
 import { apiErrorText } from '../utils/apiError';
 import { LatestRequest, isAbortError } from '../utils/request';
+import SelectionBar, { BarDivider } from './SelectionBar';
 
 // Search failures worth explaining in-page rather than only as a toast. `keyHint`
 // marks the ones a user API key actually fixes; an upstream 5xx does not. Title
@@ -29,6 +29,12 @@ const SEARCH_ERRORS = {
   'rate-limit': { keyHint: true },
   upstream: { keyHint: false },
 };
+
+// A game's card list still being written on this device (X-Catalogue-Pending: a
+// TCGplayer-catalogue game's first use in device mode) is asked for again this
+// often, so its sets turn up once it is done.
+const CATALOGUE_RETRY_MS = 10000;
+const cataloguePending = (res) => res.headers?.get('X-Catalogue-Pending') === '1';
 
 function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
   const { t } = useT();
@@ -45,6 +51,9 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState(null);
+  // The last search was answered while the game's card list was still being
+  // written: an empty answer then means "not yet", not "no such card".
+  const [searchPending, setSearchPending] = useState(false);
   // A Magic query that cannot be read (an open quote, a stray parenthesis), shown
   // under the box instead of being sent off to come back empty.
   const [syntaxError, setSyntaxError] = useState(null);
@@ -87,8 +96,7 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
   const [selectedCard, setSelectedCard] = useState(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
-  const [, setLocations] = useState([]);
-  
+
   // Form states
   const [quantity, setQuantity] = useState(1);
   const [condition, setCondition] = useState('Near Mint');
@@ -98,12 +106,6 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
   const [grader, setGrader] = useState('Raw');
   const [grade, setGrade] = useState('');
   const [certNumber, setCertNumber] = useState('');
-  const [, setLocationId] = useState('');
-
-  // Fetch physical locations on mount for the form dropdown
-  useEffect(() => {
-    fetchLocations();
-  }, []);
 
   // Set codes for the autocomplete. The sets table already holds every set for
   // both games, so nobody has to know that "ltr" means Tales of Middle-earth.
@@ -112,9 +114,13 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
   // list is per-language (the route reads it from TCGdex for those).
   useEffect(() => {
     let cancelled = false;
+    let retry = null;
     setKnownSets([]);
-    fetch(`/api/sets?game=${game}&lang=${encodeURIComponent(searchLang)}`)
-      .then(r => (r.ok ? r.json() : []))
+    const load = () => fetch(`/api/sets?game=${game}&lang=${encodeURIComponent(searchLang)}`)
+      .then((r) => {
+        if (cataloguePending(r) && !cancelled) retry = setTimeout(load, CATALOGUE_RETRY_MS);
+        return r.ok ? r.json() : [];
+      })
       .then(rows => {
         if (cancelled) return;
         const seen = new Set();
@@ -125,24 +131,9 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
           .reverse()); // newest first — that is what people are adding
       })
       .catch(() => {});
-    return () => { cancelled = true; };
+    load();
+    return () => { cancelled = true; clearTimeout(retry); };
   }, [game, searchLang]);
-
-  const fetchLocations = async () => {
-    try {
-      const response = await fetch('/api/locations');
-      if (response.ok) {
-        const data = await response.json();
-        setLocations(data);
-        if (data.length > 0) {
-          // Default to Unassigned Pile
-          setLocationId('');
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching locations:', err);
-    }
-  };
 
   // Only the newest search may write results. Without this a slow "pika"
   // answered after a quick "pikachu" and replaced its results; now starting a
@@ -150,7 +141,11 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
   // dropped. Leaving the screen aborts whatever is still running.
   const searchReq = useRef(null);
   if (!searchReq.current) searchReq.current = new LatestRequest();
-  useEffect(() => () => searchReq.current.cancel(), []);
+  // The same rule for the quick-add drawer's language switch: picking German
+  // then Japanese quickly must end on the Japanese printing.
+  const printingReq = useRef(null);
+  if (!printingReq.current) printingReq.current = new LatestRequest();
+  useEffect(() => () => { searchReq.current.cancel(); printingReq.current.cancel(); }, []);
 
   // pageNum > 1 appends to the existing results instead of replacing them.
   const runSearch = async (pageNum, size = pageSize) => {
@@ -160,6 +155,7 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
     setSearchError(null);
     if (!append) {
       setSearching(true);
+      setSearchPending(false);
       setFilterType('');
       setFilterRarity('');
       setFilterSupertype('');
@@ -199,6 +195,7 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
         if (!req.isLatest()) return;
         const reported = parseInt(response.headers.get('X-Total-Count'), 10);
         if (Number.isFinite(reported)) setTotal(reported);
+        if (!append) setSearchPending(cataloguePending(response));
         setHasMore(data.length >= size);
         setPage(pageNum);
         // Paging shifts the exact-match head off later pages, so the same
@@ -466,19 +463,23 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
   const handleLanguageChange = async (newLang) => {
     setLanguage(newLang);
     if (!selectedCard) return;
+    const req = printingReq.current.begin();
     try {
       const targetGame = selectedCard.game || game;
-      const resp = await fetch(`/api/cards/${encodeURIComponent(selectedCard.id)}/printing?lang=${encodeURIComponent(newLang)}&game=${encodeURIComponent(targetGame)}`);
+      const resp = await fetch(`/api/cards/${encodeURIComponent(selectedCard.id)}/printing?lang=${encodeURIComponent(newLang)}&game=${encodeURIComponent(targetGame)}`, { signal: req.signal });
       if (resp.ok) {
         const localized = await resp.json();
+        if (!req.isLatest()) return;
         if (localized && localized.id) {
           setSelectedCard(prev => (prev ? { ...prev, ...localized, language: newLang } : { ...localized, language: newLang }));
           return;
         }
       }
     } catch (e) {
+      if (isAbortError(e)) return;
       console.warn('Could not switch to localized printing:', e);
     }
+    if (!req.isLatest()) return;
     setSelectedCard(prev => (prev ? { ...prev, language: newLang } : prev));
   };
 
@@ -509,6 +510,8 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
   };
 
   const closeDrawer = () => {
+    // A language lookup still running must not reopen the card it was for.
+    printingReq.current.cancel();
     setIsDrawerOpen(false);
     setIsFullScreen(false);
     setSelectedCard(null);
@@ -548,17 +551,26 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
       });
 
       if (response.ok) {
-        showToast(t('search.addedToCollection', { name: displayName(selectedCard) }));
+        const added = await response.json().catch(() => ({}));
+        const place = added.placement?.label || null;
+        const qty = parseInt(quantity, 10) > 1 ? `${parseInt(quantity, 10)}× ` : '';
+        // Each copy is filed on its own; one with no room stays in Unsorted (`unplaced`).
+        if (place && added.unplaced > 0) showToast(t('scan.addedSomeUnplaced', { qty, name: displayName(selectedCard), place, count: added.unplaced }));
+        else if (!place && added.container_full) showToast(t('scan.addedFullPlain', { name: displayName(selectedCard) }));
+        else showToast(t('search.addedToCollection', { name: displayName(selectedCard) }));
         
         // Trigger confetti for rare/valuable cards!
         const rarity = (selectedCard.rarity || '').toLowerCase();
         const price = selectedCard.price_trend || 0;
+        // Loaded on first use, not with the view: most adds never need it.
         if (rarity.includes('holo') || rarity.includes('secret') || rarity.includes('ultra') || price > 10) {
-          confetti({
-            particleCount: 150,
-            spread: 80,
-            origin: { y: 0.6 }
-          });
+          import('canvas-confetti')
+            .then(({ default: confetti }) => confetti({
+              particleCount: 150,
+              spread: 80,
+              origin: { y: 0.6 }
+            }))
+            .catch(() => { /* decoration only */ });
         }
 
         onAddSuccess(); // Update stats
@@ -575,7 +587,6 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
     }
   };
 
-  // Helper to determine location type layout guidance
   return (
     <div>
       {/* Search Header Panel */}
@@ -865,13 +876,16 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
         </div>
       )}
 
-      {/* Bulk add bar — sticky single row, matching the collection's bulk bar. */}
+      {/* Bulk add bar — the collection's bulk bar, with this screen's actions. */}
       {selectMode && (
-        <div className="glass-panel" style={{ marginBottom: '1rem', padding: '0.75rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', position: 'sticky', top: '0.5rem', zIndex: 30 }}>
-          <span style={{ fontWeight: 800, color: 'var(--text-strong)', fontSize: '0.85rem' }}>{t('bulk.selected', { count: selectedIds.size })}</span>
-          <button className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.3rem 0.6rem' }} onClick={() => setSelectedIds(new Set(filteredAndSortedCards.map(c => c.id)))}>{t('bulk.selectAll', { count: filteredAndSortedCards.length })}</button>
-          <button className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.3rem 0.6rem' }} onClick={clearSelection}>{t('bulk.clear')}</button>
-          <div style={{ width: '1px', height: '22px', background: 'var(--border-glass)' }} />
+        <SelectionBar
+          count={selectedIds.size}
+          total={filteredAndSortedCards.length}
+          onSelectAll={() => setSelectedIds(new Set(filteredAndSortedCards.map(c => c.id)))}
+          onClear={clearSelection}
+          onDone={exitSelectMode}
+        >
+          <BarDivider />
           <select className="select-control" value={condition} onChange={(e) => setCondition(e.target.value)} style={{ fontSize: '0.72rem', maxWidth: '150px', padding: '0.3rem 0.4rem' }}>
             {CONDITIONS.map(c => <option key={c} value={c}>{conditionLabel(t, c)}</option>)}
           </select>
@@ -908,8 +922,7 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
             disabled={selectedIds.size === 0}
             style={{ fontSize: '0.72rem', maxWidth: '160px', padding: '0.3rem 0.4rem' }}
           />
-          <button className="btn btn-secondary" style={{ fontSize: '0.72rem', padding: '0.3rem 0.6rem', marginLeft: 'auto' }} onClick={exitSelectMode}>{t('bulk.done')}</button>
-        </div>
+        </SelectionBar>
       )}
 
       {/* Search Results Grid */}
@@ -986,7 +999,7 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
             disabled={loadingMore}
             onClick={() => runSearch(page + 1)}
           >
-            {loadingMore ? 'Loading...' : `Load ${pageSize} more`}
+            {loadingMore ? t('common.loading') : t('search.loadMore', { count: pageSize })}
           </button>
         </div>
       )}
@@ -1001,7 +1014,9 @@ function CardSearch({ onAddSuccess, showToast, setActiveTab }) {
       {/* Empty State */}
       {!loading && searching && !searchError && cards.length === 0 && (
         <div className="glass-panel" style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '3rem 1.5rem' }}>
-          <p>{t('search.noQueryMatches')}</p>
+          <p role={searchPending ? 'status' : undefined}>
+            {searchPending ? t('search.cataloguePending', { game: gameLabel(game) }) : t('search.noQueryMatches')}
+          </p>
         </div>
       )}
 

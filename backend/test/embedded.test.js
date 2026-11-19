@@ -5,46 +5,12 @@
 // through embedded.handle(), the same entry point the app's fetch shim calls.
 // The one thing that differs from a phone is the SQLite underneath: the shim is
 // handed a driver over node-sqlite3 here, where the app hands it the Capacitor
-// plugin (frontend/src/utils/deviceSqlite.js, tested on its own).
+// plugin (frontend/src/utils/deviceSqlite.js, tested on its own). The loader is
+// test/deviceHarness.js, shared with the other device-mode tests.
 const assert = require('assert');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const Module = require('module');
-const sqlite3 = require('sqlite3');
+const { loadEmbedded } = require('./deviceHarness');
 
-const tmpDb = path.join(os.tmpdir(), `bindarr-embedded-${process.pid}.db`);
-process.env.DB_PATH = tmpDb;
-delete process.env.DEFAULT_ADMIN_PASSWORD;
-
-// Swap modules only for code under src/, which is what the bundler does: the
-// test itself keeps the real sqlite3 to build its driver from.
-const SRC = path.join(__dirname, '..', 'src') + path.sep;
-const aliases = require('../src/embedded/aliases');
-const resolve = Module._resolveFilename;
-Module._resolveFilename = function (request, parent, ...rest) {
-  const fromSrc = parent && parent.filename && parent.filename.startsWith(SRC);
-  if (fromSrc && Object.prototype.hasOwnProperty.call(aliases, request)) {
-    return resolve.call(this, aliases[request], parent, ...rest);
-  }
-  return resolve.call(this, request, parent, ...rest);
-};
-
-function nodeDriver() {
-  let conn;
-  return {
-    open: (name) => new Promise((ok, fail) => { conn = new sqlite3.Database(name, err => (err ? fail(err) : ok())); }),
-    run: (sql, params) => new Promise((ok, fail) => conn.run(sql, params, function (err) {
-      if (err) fail(err); else ok({ lastID: this.lastID, changes: this.changes });
-    })),
-    all: (sql, params) => new Promise((ok, fail) => conn.all(sql, params, (err, rows) => (err ? fail(err) : ok(rows)))),
-    close: () => new Promise((ok, fail) => conn.close(err => (err ? fail(err) : ok()))),
-  };
-}
-
-const embedded = require('../src/embedded');
-const db = require('../src/db');
-embedded.setDriver(nodeDriver());
+const { embedded, db, cleanup } = loadEmbedded('embedded');
 
 let token;
 async function call(method, url, { body, auth = true, raw } = {}) {
@@ -76,7 +42,7 @@ function testRouterMatching() {
 async function testBootAndSession() {
   ({ token } = await embedded.start({ background: false }));
   assert.match(token, /^[0-9a-f]{64}$/);
-  assert.strictEqual((await embedded.start()).token, token, 'start() is idempotent');
+  assert.strictEqual((await embedded.start({ background: false })).token, token, 'start() is idempotent');
 
   const me = await call('GET', '/api/auth/me');
   assert.strictEqual(me.status, 200);
@@ -180,8 +146,11 @@ async function testBackupRoundTrip() {
   const deckId = (await db.get(`SELECT id FROM decks WHERE name = 'Elves'`)).id;
   await db.run(`INSERT INTO deck_cards (deck_id, card_id, quantity) VALUES (?, 'mtg-embedded-1', 4)`, [deckId]);
   await call('POST', '/api/notes', { body: { title: 'Keep', body: 'this note' } });
-  // A sealed box, one unit opened, the copy filed as coming out of it.
-  const purchase = await db.run(`INSERT INTO sealed_purchases (user_id, product_name, quantity) VALUES (1, 'Booster Box', 1)`);
+  // A sealed box, one unit opened, the copy filed as coming out of it. The box
+  // follows a recipe: one guaranteed copy of the card.
+  const recipe = await db.run(`INSERT INTO sealed_templates (user_id, product_name) VALUES (1, 'Booster Box')`);
+  await db.run(`INSERT INTO sealed_template_components (template_id, component_type, quantity, card_id) VALUES (?, 'card', 1, 'mtg-embedded-1')`, [recipe.lastID]);
+  const purchase = await db.run(`INSERT INTO sealed_purchases (user_id, product_name, quantity, template_id) VALUES (1, 'Booster Box', 1, ?)`, [recipe.lastID]);
   const unit = await db.run(`INSERT INTO sealed_units (purchase_id, opened_at) VALUES (?, CURRENT_TIMESTAMP)`, [purchase.lastID]);
   await db.run(`UPDATE collection SET sealed_unit_id = ? WHERE card_id = 'mtg-embedded-1'`, [unit.lastID]);
   // The deck's missing-cards list, with one wanted card.
@@ -201,6 +170,7 @@ async function testBackupRoundTrip() {
   await db.run(`DELETE FROM decks`);
   await db.run(`DELETE FROM collection`);
   await db.run(`DELETE FROM sealed_purchases`);
+  await db.run(`DELETE FROM sealed_templates`);
   await db.run(`DELETE FROM card_lists`);
   await db.run(`DELETE FROM price_history`);
   await db.run(`DELETE FROM card_cache WHERE id = 'mtg-embedded-1'`);
@@ -227,6 +197,13 @@ async function testBackupRoundTrip() {
        JOIN sealed_purchases p ON p.id = u.purchase_id WHERE c.card_id = 'mtg-embedded-1'`
   );
   assert.strictEqual(opened && opened.product_name, 'Booster Box', 'sealed product and the copy opened from it come back linked');
+  const followed = await db.get(
+    `SELECT t.product_name, t.user_id, c.card_id, c.quantity FROM sealed_purchases p
+       JOIN sealed_templates t ON t.id = p.template_id JOIN sealed_template_components c ON c.template_id = t.id
+      WHERE p.product_name = 'Booster Box'`
+  );
+  assert.deepStrictEqual(followed, { product_name: 'Booster Box', user_id: 1, card_id: 'mtg-embedded-1', quantity: 1 },
+    'a recipe the phone no longer has comes back, components and all, with the purchase following it');
   const wanted = await db.get(
     `SELECT l.name, d.name AS deck, i.quantity_wanted FROM card_list_items i JOIN card_lists l ON l.id = i.list_id
        JOIN decks d ON d.id = l.deck_id WHERE i.card_id = 'mtg-embedded-1'`
@@ -240,9 +217,17 @@ async function testBackupRoundTrip() {
 }
 
 async function testServerOnlyRoutes() {
-  for (const url of ['/api/admin/users', '/api/shared/abc123', '/api/card-art/index']) {
-    const res = await call('GET', url);
-    assert.strictEqual(res.status, 501, `${url} is not on the device`);
+  // Every server-only route answers 501, not 404: the UI can tell "needs a
+  // server" from a mistake (routes/mounts.js, held to server.js by apimounts.test.js).
+  const serverOnly = [
+    ['GET', '/api/admin/users'], ['GET', '/api/shared/abc123'], ['GET', '/api/card-art/index'],
+    ['GET', '/api/health'], ['GET', '/api/notifications'], ['POST', '/api/notifications/channels'],
+    ['POST', '/api/binder-art'], ['GET', '/api/binder-art/7/image'], ['GET', '/api/locations/1/binder-art'],
+    ['PUT', '/api/compartments/1/binder-art'],
+  ];
+  for (const [method, url] of serverOnly) {
+    const res = await call(method, url, method === 'GET' ? {} : { body: {} });
+    assert.strictEqual(res.status, 501, `${method} ${url} is not on the device`);
     assert.strictEqual(res.json.deviceMode, true);
   }
   const missing = await call('GET', '/api/no-such-route');
@@ -303,9 +288,239 @@ async function testDeviceScan() {
 
   const sets = await call('GET', '/api/scan-sets?game=mtg');
   assert.deepStrictEqual(sets.json.builtLangs, ['English'], 'the scanner offers the downloaded catalog');
+  // A game with nothing downloaded asks for the download, by name (which games
+  // have a catalog at all is the release's list, shown by the app).
+  const riftbound = await call('POST', '/api/scan-match', { body: { ...body, game: 'riftbound' } });
+  assert.strictEqual(riftbound.status, 503);
+  assert.match(riftbound.json.error, /Download the Riftbound scan data/);
   const lorcana = await call('POST', '/api/scan-match', { body: { ...body, game: 'lorcana' } });
   assert.strictEqual(lorcana.status, 503);
-  assert.match(lorcana.json.error, /Lorcana/);
+  assert.match(lorcana.json.error, /Download the Disney Lorcana scan data/);
+
+  // The data is on the phone but milo would not run (frontend/src/device/runtime.js
+  // sends embedError): that is not "download the scan data" (MOB-04).
+  const { embedding, ...photoless } = body;
+  assert.ok(embedding);
+  const failed = await call('POST', '/api/scan-match', { body: { ...photoless, embedError: 'no WebAssembly SIMD' } });
+  assert.strictEqual(failed.status, 503);
+  assert.strictEqual(failed.json.scanFailed, true);
+  assert.ok(!failed.json.notBuilt, 'a failed embedding is not reported as missing scan data');
+  assert.match(failed.json.error, /SIMD/);
+  // With no catalog for the game, downloading it IS the fix, failure or not.
+  const notBuilt = await call('POST', '/api/scan-match', { body: { ...photoless, game: 'pokemon', embedError: 'x' } });
+  assert.strictEqual(notBuilt.json.notBuilt, true);
+}
+
+// Deleting moves a copy to the trash on the phone as on a server, so the trash
+// routes have to be there too: Undo, the Trash dialog and "Empty trash" (MOB-01).
+async function testTrashOnDevice() {
+  const added = await call('POST', '/api/collection', { body: { card_id: 'mtg-embedded-1', game: 'mtg' } });
+  assert.strictEqual(added.status, 200, JSON.stringify(added.json));
+  const id = added.json.id;
+
+  const deleted = await call('DELETE', `/api/collection/${id}`);
+  assert.strictEqual(deleted.status, 200, JSON.stringify(deleted.json));
+  const batch = deleted.json.trash_batch;
+  assert.ok(batch, 'a delete names its trash batch');
+
+  const listed = await call('GET', '/api/collection/trash');
+  assert.strictEqual(listed.status, 200, 'the Trash dialog loads');
+  assert.deepStrictEqual(listed.json.batches.map(b => [b.batch_id, b.count]), [[batch, 1]]);
+
+  const restored = await call('POST', `/api/collection/trash/${batch}/restore`);
+  assert.strictEqual(restored.status, 200, `Undo restores: ${JSON.stringify(restored.json)}`);
+  assert.strictEqual(restored.json.restored, 1);
+  assert.ok(await db.get(`SELECT id FROM collection WHERE id = ?`, [id]), 'the copy is back under its own id');
+
+  // "Empty trash" reaches the trash, not the delete-one-copy route behind it.
+  await call('DELETE', `/api/collection/${id}`);
+  const emptied = await call('DELETE', '/api/collection/trash');
+  assert.strictEqual(emptied.status, 200, JSON.stringify(emptied.json));
+  assert.strictEqual(emptied.json.removed, 1);
+  assert.strictEqual((await call('GET', '/api/collection/trash')).json.batches.length, 0);
+}
+
+// A request as the phone's WebView makes it: with no Node Buffer anywhere on its
+// path (riftboundnobuffer.test.js hides it the same way).
+async function onPhone(method, url, options) {
+  const saved = global.Buffer;
+  global.Buffer = undefined;
+  try {
+    return await call(method, url, options);
+  } finally {
+    global.Buffer = saved;
+  }
+}
+
+// Trades and gifts between accounts need the other account's server, so the phone
+// answers 501 for them; deals recorded with people outside Bindarr are the
+// account's own record and work on the phone, backup included (routes/mounts.js).
+async function testTransfersOnDevice() {
+  const serverOnly = [
+    ['GET', '/api/transfers'], ['POST', '/api/transfers'],
+    ['GET', '/api/transfers/users'], ['POST', '/api/transfers/users'],
+    ['GET', '/api/transfers/history'], ['POST', '/api/transfers/history'],
+    ['PUT', '/api/transfers/1/accept'], ['GET', '/api/transfers/marked/1'],
+  ];
+  for (const [method, url] of serverOnly) {
+    const res = await call(method, url, method === 'GET' ? {} : { body: {} });
+    assert.strictEqual(res.status, 501, `${method} ${url} needs a server`);
+    assert.strictEqual(res.json.deviceMode, true);
+  }
+  const none = await onPhone('GET', '/api/transfers/external');
+  assert.strictEqual(none.status, 200, JSON.stringify(none.json));
+  assert.deepStrictEqual(none.json.transactions, []);
+
+  // A trade with someone outside Bindarr, recorded end to end: one copy out, one in.
+  await db.run(
+    `INSERT INTO card_cache (id, name, set_id, set_name, number, game, language) VALUES
+       ('mtg-deal-given', 'Giant Growth', 'mtg-m19', 'Core Set 2019', '1', 'mtg', 'English'),
+       ('mtg-deal-received', 'Shock', 'mtg-m19', 'Core Set 2019', '2', 'mtg', 'English')`
+  );
+  const given = await call('POST', '/api/collection', { body: { card_id: 'mtg-deal-given', game: 'mtg' } });
+  assert.strictEqual(given.status, 200, JSON.stringify(given.json));
+  const contact = await onPhone('POST', '/api/transfers/external/contacts', { body: { name: 'Sam' } });
+  assert.strictEqual(contact.status, 201, JSON.stringify(contact.json));
+  const deal = await onPhone('POST', '/api/transfers/external', {
+    body: {
+      contact_id: contact.json.contact.id,
+      transaction_type: 'trade',
+      given_items: [{ type: 'card', id: given.json.id }],
+      received_items: [{ type: 'card', card_id: 'mtg-deal-received', game: 'mtg' }],
+    },
+  });
+  assert.strictEqual(deal.status, 201, JSON.stringify(deal.json));
+  const recorded = await onPhone('GET', '/api/transfers/external');
+  assert.deepStrictEqual(recorded.json.transactions.map(t => [t.contact_name, t.transaction_type, t.items.map(i => i.direction).sort()]),
+    [['Sam', 'trade', ['given', 'received']]]);
+  assert.strictEqual(await db.get(`SELECT 1 FROM collection WHERE id = ?`, [given.json.id]), undefined, 'the copy given away left the collection');
+  const received = await db.get(`SELECT id FROM collection WHERE card_id = 'mtg-deal-received'`);
+  assert.ok(received, 'the copy received is in it');
+  const item = await db.get(`SELECT id FROM external_transaction_items WHERE direction = 'received' AND source_collection_id = ?`, [received.id]);
+  // The copy names the deal item that brought it in.
+  await db.run(`UPDATE collection SET acquired_via_external_item_id = ? WHERE id = ?`, [item.id, received.id]);
+
+  // The phone's full backup carries the deal and restores it renumbered, linked to
+  // the restored copy. The same file as made on a server, where that copy came in
+  // a trade between accounts: the phone has no record of the trade, and the copy
+  // comes back without the link instead of failing the restore on it.
+  const backup = await onPhone('GET', '/api/backup');
+  assert.strictEqual(backup.status, 200);
+  assert.deepStrictEqual(backup.json.data.external_contacts.map(c => c.name), ['Sam']);
+  assert.strictEqual(backup.json.data.external_transaction_items.length, 2);
+  const file = JSON.parse(JSON.stringify(backup.json));
+  Object.assign(file.data.collection.find(c => c.card_id === 'mtg-deal-received'),
+    { acquired_via_transfer_item_id: 4242, acquired_via_historical_trade_item_id: 4343 });
+  const restored = await onPhone('POST', '/api/backup/restore', { body: { backup: file } });
+  assert.strictEqual(restored.status, 200, JSON.stringify(restored.json));
+  assert.strictEqual(restored.json.external_deals, 1);
+  const copy = await db.get(`SELECT * FROM collection WHERE card_id = 'mtg-deal-received'`);
+  assert.deepStrictEqual([copy.acquired_via_transfer_item_id, copy.acquired_via_historical_trade_item_id], [null, null]);
+  const back = await db.get(
+    `SELECT i.id, i.source_collection_id, t.contact_name_snapshot, c.name FROM external_transaction_items i
+       JOIN external_transactions t ON t.id = i.transaction_id LEFT JOIN external_contacts c ON c.id = t.contact_id
+      WHERE i.direction = 'received'`
+  );
+  assert.notStrictEqual(back.id, item.id, 'renumbered');
+  assert.strictEqual(copy.acquired_via_external_item_id, back.id, 'the copy names the restored deal item');
+  assert.strictEqual(back.source_collection_id, copy.id, 'and the item names the restored copy');
+  assert.deepStrictEqual([back.contact_name_snapshot, back.name], ['Sam', 'Sam']);
+  const after = await onPhone('GET', '/api/transfers/external');
+  assert.deepStrictEqual(after.json.transactions.map(t => [t.contact_name, t.items.length]), [['Sam', 2]]);
+}
+
+// The trash names each batch with a UUID, and WebCrypto's randomUUID only arrived
+// in iOS 15.4; the app supports 15.0 (MOB-16).
+function testRandomUuidWithoutWebCrypto() {
+  const shim = require('../src/embedded/shims/crypto');
+  const native = shim.randomUUID();
+  const webCrypto = globalThis.crypto;
+  webCrypto.randomUUID = undefined;   // an own property shadowing the method
+  try {
+    const seen = new Set();
+    for (let i = 0; i < 200; i++) {
+      const id = shim.randomUUID();
+      assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, id);
+      seen.add(id);
+    }
+    assert.strictEqual(seen.size, 200);
+  } finally {
+    delete webCrypto.randomUUID;
+  }
+  assert.match(native, /^[0-9a-f-]{36}$/);
+  assert.strictEqual(typeof globalThis.crypto.randomUUID, 'function', 'the real one is back');
+}
+
+// notify.emit queues with setImmediate, which a WebView lacks (MOB-05).
+async function testGlobalsForAWebView() {
+  const { installGlobals } = require('../src/embedded/globals');
+  const view = {};
+  installGlobals(view);
+  assert.deepStrictEqual(view.process, { env: {} });
+  const ran = await new Promise((resolve) => view.setImmediate((a, b) => resolve([a, b]), 1, 2));
+  assert.deepStrictEqual(ran, [1, 2], 'setImmediate runs its callback with its arguments');
+  const cancelled = view.setImmediate(() => assert.fail('cleared'));
+  view.clearImmediate(cancelled);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  // Where there is one already (Node here), it is left alone.
+  const node = { setImmediate, process };
+  installGlobals(node);
+  assert.strictEqual(node.setImmediate, setImmediate);
+  assert.strictEqual(node.process, process);
+}
+
+// A phone's catalog from Bindarr's release is keyed by card ids (`local: true`
+// from the device source), so its matches resolve like a server's local build.
+// The Riftbound sets RiftCodex lacks (riftboundTcgplayer.js) are written on the
+// phone too: from the TCGCSV cache it keeps, with no Buffer and no request.
+async function testRiftboundFallbackOnDevice() {
+  const rc = require('../src/riftcodexApi');
+  await rc.cacheCards(rc.normalizeCatalogue(require('./fixtures/riftbound/cards.json')));
+  const fix = require('./fixtures/riftbound/tcgplayer-89.json');
+  const version = '2026-11-16T20:05:50+0000';
+  await db.run(`UPDATE app_settings SET tcgcsv_data_version = ? WHERE id = 1`, [version]);
+  const put = (p, rows) => db.run(
+    `INSERT OR REPLACE INTO tcgcsv_cache (path, data_version, results_json) VALUES (?, ?, ?)`, [p, version, JSON.stringify(rows)]
+  );
+  await put('/tcgplayer/89/groups', fix.groups);
+  for (const g of fix.groups) {
+    await put(`/tcgplayer/89/${g.groupId}/products`, fix.products[g.groupId] || []);
+    await put(`/tcgplayer/89/${g.groupId}/prices`, fix.prices[g.groupId] || []);
+  }
+  const sets = await onPhone('GET', '/api/sets?game=riftbound');
+  assert.strictEqual(sets.status, 200, JSON.stringify(sets.json));
+  assert.ok(sets.json.some(s => s.id === 'riftbound-rad' && s.name === 'Radiance'), JSON.stringify(sets.json.map(s => s.id)));
+  const found = await onPhone('GET', '/api/search?game=riftbound&set=RAD');
+  assert.strictEqual(found.status, 200, JSON.stringify(found.json));
+  assert.strictEqual(found.json.length, 8);
+  const signature = await onPhone('GET', `/api/cards/${encodeURIComponent('riftbound-rad-179.2a-167')}/printing?lang=en`);
+  assert.strictEqual(signature.status, 200, JSON.stringify(signature.json));
+  assert.strictEqual(signature.json.tcgplayer_product_id, 724641);
+}
+
+async function testDeviceReleaseCatalog() {
+  const cvScan = require('../src/cvScan');
+  const dim = 4;
+  cvScan.setSource({
+    hasModels: () => true,
+    hasCatalog: (game) => game === 'lorcana',
+    loadCatalog: async () => ({ cat: Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0]), ids: ['lorcana-a', 'lorcana-b'], n: 2, dim, local: true }),
+  });
+  const c = await cvScan.load('lorcana');
+  assert.strictEqual(c.local, true, 'a release catalog is keyed by card ids');
+  assert.deepStrictEqual(c.ids, ['lorcana-a', 'lorcana-b']);
+  cvScan.setSource({
+    hasModels: () => true,
+    hasCatalog: () => true,
+    loadCatalog: async () => ({ cat: new Float32Array(dim), ids: ['123'], n: 1, dim }),
+  });
+  assert.strictEqual((await cvScan.load('pokemon')).local, false, 'a snapshot without the flag keeps provider ids');
+  cvScan.setSource(null);
+  // What the app downloads release catalogs with, handed over by the bundle.
+  const rel = embedded.scanAssets.release;
+  assert.match(rel.base, /\/releases\/download\/scan-catalogs$/);
+  assert.strictEqual(typeof rel.segments.decodeSegment, 'function');
+  assert.strictEqual(rel.model, 'milo1');
 }
 
 async function main() {
@@ -319,11 +534,14 @@ async function main() {
     await testBackupRoundTrip();
     await testServerOnlyRoutes();
     await testDeviceScan();
+    await testDeviceReleaseCatalog();
+    await testTrashOnDevice();
+    await testTransfersOnDevice();
+    await testRiftboundFallbackOnDevice();
+    testRandomUuidWithoutWebCrypto();
+    await testGlobalsForAWebView();
   } finally {
-    try { await new Promise(ok => db.dbConnection.close(ok)); } catch { /* already closed */ }
-    for (const suffix of ['', '-wal', '-shm']) {
-      try { fs.unlinkSync(tmpDb + suffix); } catch { /* not present */ }
-    }
+    await cleanup();
   }
 }
 

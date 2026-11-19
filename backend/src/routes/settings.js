@@ -5,6 +5,10 @@ const { requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 
+// The Pokémon providers an admin may pick. TCGdex is the default; pokemontcg.io
+// stays selectable only for installs still pinned to it until they migrate.
+const POKEMON_PROVIDERS = ['tcgdex', 'pokemontcg', 'pokemontcgapi'];
+
 // --- Version + update check ---
 
 // backend/package.json is what the release workflow bumps, so it is the running
@@ -63,11 +67,13 @@ async function getEffectiveSettings() {
   const row = await db.get(`
     SELECT public_base_url, pokemon_provider, mtg_price_source, price_refresh_days,
            scan_exclude_tokens, scan_exclude_art_cards, scan_exclude_jumpstart, scan_exclude_promos,
-           scan_exclude_digital, setup_complete, sealed_tcg_extra_enabled
+           scan_exclude_digital, setup_complete, setup_step, sealed_tcg_extra_enabled
     FROM app_settings WHERE id = 1
   `);
   const public_base_url = (row && row.public_base_url) || process.env.PUBLIC_BASE_URL || '';
-  const pokemon_provider = (row && row.pokemon_provider) || 'pokemontcg';
+  // TCGdex unless the row explicitly holds another provider: pokemontcg.io is only
+  // ever the upgrade pin for installs whose data it numbers (db.js), never a default.
+  const pokemon_provider = POKEMON_PROVIDERS.includes(row && row.pokemon_provider) ? row.pokemon_provider : 'tcgdex';
   const mtg_price_source = row && row.mtg_price_source === 'cardmarket' ? 'cardmarket' : 'tcgplayer';
   const scan_exclude_tokens = !!(row && row.scan_exclude_tokens);
   const scan_exclude_art_cards = !!(row && row.scan_exclude_art_cards);
@@ -77,6 +83,7 @@ async function getEffectiveSettings() {
   // read as excluded rather than as included — see the column comment in db.js.
   const scan_exclude_digital = row ? !!row.scan_exclude_digital : true;
   const setup_complete = !!(row && row.setup_complete);
+  const setup_step = (row && typeof row.setup_step === 'string') ? row.setup_step : '';
   // Magic/Lorcana sealed tracking: TCGCSV categories 1 and 71 in the daily sync.
   const sealed_tcg_extra_enabled = !!(row && row.sealed_tcg_extra_enabled);
   // Daily unless an admin says otherwise, matching what every install did before
@@ -94,6 +101,7 @@ async function getEffectiveSettings() {
     scan_exclude_promos,
     scan_exclude_digital,
     setup_complete,
+    setup_step,
     sealed_tcg_extra_enabled,
   };
 }
@@ -121,102 +129,51 @@ router.put('/', requireAdmin, async (req, res) => {
     scan_exclude_promos,
     scan_exclude_digital,
     setup_complete,
+    setup_step,
     sealed_tcg_extra_enabled,
   } = req.body;
 
-  // Validated before anything is written, so a bad value cannot leave the other
-  // fields of the same save half-applied. Rejected rather than coerced (unlike
-  // pokemon_provider): silently falling back to TCGplayer on a typo would look,
-  // from the admin's side, like the setting not working.
+  // Every field is validated before anything is written, so a bad value cannot
+  // leave the other fields of the same save half-applied -- some used to be
+  // checked only after earlier ones had been saved. Rejected rather than coerced:
+  // silently falling back to TCGplayer on a typo would look, from the admin's
+  // side, like the setting not working.
   const scryfallApi = require('../scryfallApi');
   if (mtg_price_source !== undefined && !scryfallApi.MTG_PRICE_SOURCES.includes(mtg_price_source)) {
     return res.status(400).json({ error: `MTG price source must be one of: ${scryfallApi.MTG_PRICE_SOURCES.join(', ')}.` });
   }
-  if (mtg_price_source !== undefined) {
-    try {
-      const before = await db.get(`SELECT mtg_price_source FROM app_settings WHERE id = 1`);
-      await db.run(`UPDATE app_settings SET mtg_price_source = ? WHERE id = 1`, [mtg_price_source]);
-      // Takes effect for every card normalized from here on (normalizeCard reads
-      // the in-memory copy), then re-prices what is already cached so collections
-      // switch currency too. In the background: it is a Scryfall sweep, and the
-      // admin's save should not wait on it.
-      scryfallApi.setPriceSource(mtg_price_source);
-      if (((before && before.mtg_price_source) || 'tcgplayer') !== mtg_price_source) {
-        console.log(`MTG price source changed to ${mtg_price_source} — re-pricing cached Magic cards.`);
-        scryfallApi.repriceForSourceChange().catch(e => {
-          console.error(`MTG re-price after price source change failed: ${e.message}`);
-        });
-      }
-    } catch (error) {
-      console.error('Failed to save MTG price source:', error);
-      return res.status(500).json({ error: 'Failed to update settings' });
-    }
-  }
-
+  let provider;
   if (pokemon_provider !== undefined) {
-    const want = ['tcgdex', 'pokemontcgapi'].includes(pokemon_provider) ? pokemon_provider : 'pokemontcg';
-    if (want === 'pokemontcgapi' && !require('../pokemontcgapi').hasKey()) {
+    // A typo used to land on pokemontcg.io, which re-numbers every Pokémon set on
+    // the install behind the admin's back.
+    if (!POKEMON_PROVIDERS.includes(pokemon_provider)) {
+      return res.status(400).json({ error: `Pokémon provider must be one of: ${POKEMON_PROVIDERS.join(', ')}.` });
+    }
+    provider = pokemon_provider;
+    if (provider === 'pokemontcgapi' && !require('../pokemontcgapi').hasKey()) {
       return res.status(400).json({ error: 'Set POKEMONTCGAPI_KEY on the server before selecting this provider.' });
     }
-    const before = await db.get(`SELECT pokemon_provider FROM app_settings WHERE id = 1`);
-    await db.run(`UPDATE app_settings SET pokemon_provider = ? WHERE id = 1`, [want]);
-    // Switching provider re-numbers everything downstream of it, and leaving the
-    // old numbering in place is worse than the switch itself: the `sets` table
-    // would list one provider's ids while new cards cache under the other's, and
-    // the TCGplayer product map resolves scans through set ids it took FROM that
-    // table. Both are rebuilt here, in the background — the set walk is one
-    // request plus a detail pass, the map is ~30 seconds.
-    if ((before && before.pokemon_provider ? before.pokemon_provider : 'pokemontcg') !== want) {
-      console.log(`Pokémon provider changed to ${want} — re-syncing sets and the TCGplayer product map.`);
-      (async () => {
-        try {
-          const source = await require('../utils/pokemonProvider').apiFor('en');
-          await source.fetchAndCacheSets(true);
-          await require('../utils/compartmentSort').loadSetsCache(db);
-          require('../tcgplayerCatalog').start();
-        } catch (e) {
-          console.error(`Provider switch follow-up failed: ${e.message}`);
-        }
-      })();
-    }
   }
-  if (sealed_tcg_extra_enabled !== undefined) {
-    if (typeof sealed_tcg_extra_enabled !== 'boolean') {
-      return res.status(400).json({ error: 'Magic/Lorcana sealed tracking must be true or false.' });
-    }
-    // Turning it on fetches the newly enabled categories in the background.
-    await require('../tcgcsvApi').setSealedExtraEnabled(sealed_tcg_extra_enabled);
+  if (sealed_tcg_extra_enabled !== undefined && typeof sealed_tcg_extra_enabled !== 'boolean') {
+    return res.status(400).json({ error: 'Magic/Lorcana sealed tracking must be true or false.' });
   }
+  // The wizard's step, by name (see the column in db/migrations.js). Only checked
+  // for shape: the step names are the wizard's, and one it no longer has simply
+  // reopens it at the start.
+  if (setup_step !== undefined && (typeof setup_step !== 'string' || !/^[a-z]{0,32}$/.test(setup_step))) {
+    return res.status(400).json({ error: 'Setup step must be a step name.' });
+  }
+  let refreshDays;
   if (price_refresh_days !== undefined) {
     // Rejected rather than clamped: a typo that silently becomes 365 is a
     // collection whose prices quietly stop moving, which looks like the app
     // being broken and not like a setting being wrong.
-    const n = Number(price_refresh_days);
-    if (!Number.isInteger(n) || n < 0 || n > 30) {
+    refreshDays = Number(price_refresh_days);
+    if (!Number.isInteger(refreshDays) || refreshDays < 0 || refreshDays > 30) {
       return res.status(400).json({ error: 'Price refresh interval must be a whole number of days from 0 (off) to 30.' });
     }
-    await db.run(`UPDATE app_settings SET price_refresh_days = ? WHERE id = 1`, [n]);
   }
-  if (scan_exclude_tokens !== undefined) {
-    await db.run(`UPDATE app_settings SET scan_exclude_tokens = ? WHERE id = 1`, [scan_exclude_tokens ? 1 : 0]);
-  }
-  if (scan_exclude_art_cards !== undefined) {
-    await db.run(`UPDATE app_settings SET scan_exclude_art_cards = ? WHERE id = 1`, [scan_exclude_art_cards ? 1 : 0]);
-  }
-  if (scan_exclude_jumpstart !== undefined) {
-    await db.run(`UPDATE app_settings SET scan_exclude_jumpstart = ? WHERE id = 1`, [scan_exclude_jumpstart ? 1 : 0]);
-  }
-  if (scan_exclude_promos !== undefined) {
-    await db.run(`UPDATE app_settings SET scan_exclude_promos = ? WHERE id = 1`, [scan_exclude_promos ? 1 : 0]);
-  }
-  if (scan_exclude_digital !== undefined) {
-    await db.run(`UPDATE app_settings SET scan_exclude_digital = ? WHERE id = 1`, [scan_exclude_digital ? 1 : 0]);
-  }
-
-  if (setup_complete !== undefined) {
-    await db.run(`UPDATE app_settings SET setup_complete = ? WHERE id = 1`, [setup_complete ? 1 : 0]);
-  }
-
+  let baseUrl;
   if (public_base_url !== undefined) {
     if (typeof public_base_url !== 'string') {
       return res.status(400).json({ error: 'Public base URL must be text' });
@@ -225,14 +182,84 @@ router.put('/', requireAdmin, async (req, res) => {
     if (trimmed && !/^https?:\/\//i.test(trimmed)) {
       return res.status(400).json({ error: 'Public base URL must start with http:// or https://' });
     }
-    const cleaned = trimmed.replace(/\/+$/, '');
-    await db.run(`UPDATE app_settings SET public_base_url = ? WHERE id = 1`, [cleaned]);
+    baseUrl = trimmed.replace(/\/+$/, '');
   }
 
   try {
+    const before = await db.get(`SELECT mtg_price_source, pokemon_provider FROM app_settings WHERE id = 1`);
+    // Then every write, in one transaction: all of the save or none of it.
+    const flag = (v) => (v ? 1 : 0);
+    const writes = [
+      ['mtg_price_source', mtg_price_source],
+      ['pokemon_provider', provider],
+      ['price_refresh_days', refreshDays],
+      ['scan_exclude_tokens', scan_exclude_tokens === undefined ? undefined : flag(scan_exclude_tokens)],
+      ['scan_exclude_art_cards', scan_exclude_art_cards === undefined ? undefined : flag(scan_exclude_art_cards)],
+      ['scan_exclude_jumpstart', scan_exclude_jumpstart === undefined ? undefined : flag(scan_exclude_jumpstart)],
+      ['scan_exclude_promos', scan_exclude_promos === undefined ? undefined : flag(scan_exclude_promos)],
+      ['scan_exclude_digital', scan_exclude_digital === undefined ? undefined : flag(scan_exclude_digital)],
+      ['setup_complete', setup_complete === undefined ? undefined : flag(setup_complete)],
+      ['setup_step', setup_step],
+      ['public_base_url', baseUrl],
+    ].filter(([, value]) => value !== undefined);
+    await db.withTransaction(async () => {
+      for (const [column, value] of writes) {
+        await db.run(`UPDATE app_settings SET ${column} = ? WHERE id = 1`, [value]);
+      }
+    });
+
+    // What the saved values set in motion, once they are saved.
+    if (mtg_price_source !== undefined) {
+      // Takes effect for every card normalized from here on (normalizeCard reads
+      // the in-memory copy), then re-prices what is already cached so collections
+      // switch currency too. In the background: it is a Scryfall sweep, and the
+      // admin's save should not wait on it.
+      scryfallApi.setPriceSource(mtg_price_source);
+      if (((before && before.mtg_price_source) || 'tcgplayer') !== mtg_price_source) {
+        console.log(`MTG price source changed to ${mtg_price_source} — re-pricing cached Magic cards.`);
+        // utils/backgroundWork: on a phone, a background job of its own.
+        require('../utils/backgroundWork').start('Magic re-price', () => scryfallApi.repriceForSourceChange()).catch(e => {
+          console.error(`MTG re-price after price source change failed: ${e.message}`);
+        });
+      }
+    }
+    // Switching provider re-numbers everything downstream of it, and leaving the
+    // old numbering in place is worse than the switch itself: the `sets` table
+    // would list one provider's ids while new cards cache under the other's, and
+    // the TCGplayer product map resolves scans through set ids it took FROM that
+    // table. Both are rebuilt here, in the background — the set walk is one
+    // request plus a detail pass, the map is ~30 seconds.
+    // An unset or unknown stored value is read as TCGdex, the default.
+    const previous = POKEMON_PROVIDERS.includes(before && before.pokemon_provider) ? before.pokemon_provider : 'tcgdex';
+    if (provider !== undefined && previous !== provider) {
+      console.log(`Pokémon provider changed to ${provider} — re-syncing sets and the TCGplayer product map.`);
+      // utils/backgroundWork: on a phone, a background job of its own.
+      require('../utils/backgroundWork').start('Pokémon provider switch', async () => {
+        // First, and apart from the rest: Bindarr's Pokémon scan catalog is keyed by
+        // TCGdex ids, so it goes on with TCGdex and off without, whether or not the
+        // provider below can be reached. Local work only (state files).
+        await require('../catalogReleases').applyProvider().catch((e) => {
+          console.error(`Provider switch: the Pokémon scan catalog could not follow: ${e.message}`);
+        });
+        try {
+          const source = await require('../utils/pokemonProvider').apiFor('en');
+          await source.fetchAndCacheSets(true);
+          await require('../utils/compartmentSort').loadSetsCache(db);
+          require('../tcgplayerCatalog').start();
+        } catch (e) {
+          console.error(`Provider switch follow-up failed: ${e.message}`);
+        }
+      });
+    }
+    // Its own write, which also queues the fetch of newly enabled categories, so
+    // it runs after the transaction rather than inside it.
+    if (sealed_tcg_extra_enabled !== undefined) {
+      await require('../tcgcsvApi').setSealedExtraEnabled(sealed_tcg_extra_enabled);
+    }
+
     res.json(await getEffectiveSettings());
   } catch (error) {
-    console.error(error);
+    console.error('Failed to update settings:', error);
     res.status(500).json({ error: 'Failed to update settings' });
   }
 });

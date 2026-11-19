@@ -153,7 +153,7 @@ async function legacyReferences(columns) {
     if (DERIVED.has(col.key)) continue;
     const c = ident(col.column);
     const ref = `source.${c}`;
-    const providerPrefixes = ['mtg-%', 'tcgdex-%', 'pokemontcgapi-%', 'lorcana-%'];
+    const providerPrefixes = idMap.FOREIGN_PREFIXES.map(p => `${p}%`);
     const rows = await db.all(
       `SELECT ${ref} AS id, COUNT(*) AS n, cc.id AS cache_id, cc.game AS cache_game,
               cc.set_id AS cache_set_id, cc.number AS cache_number
@@ -843,10 +843,13 @@ async function providerFollowUp(provider) {
   try { require('./tcgplayerCatalog').start(); } catch { /* already building, which is what was wanted */ }
 }
 
+// Work the apply request does not wait for (utils/backgroundWork). The migration
+// is a server's (Admin), and only there does anything await this promise
+// (apply({ background: false }), idle()).
 function startFollowUp({ runId, provider, switched }) {
   const state = { run_id: runId, phase: 'catalog', done: 0, total: 0, failed: 0, catalog: 0, message: '', started_at: new Date().toISOString(), finished_at: null };
   followUp = state;
-  state.promise = (async () => {
+  state.promise = require('./utils/backgroundWork').start('Pokémon id migration follow-up', async () => {
     try {
       state.catalog = rekeyCatalogIds(await appliedPairs());
       state.phase = 'hydrating';
@@ -885,7 +888,7 @@ function startFollowUp({ runId, provider, switched }) {
     } finally {
       state.finished_at = new Date().toISOString();
     }
-  })();
+  });
   return state;
 }
 
@@ -1089,13 +1092,13 @@ async function status() {
       cc.id AS cache_id, cc.game AS cache_game, cc.set_id AS cache_set_id, cc.number AS cache_number
       FROM collection c
       JOIN card_cache cc ON cc.id = c.card_id
-     WHERE cc.game = 'pokemon' AND c.card_id NOT LIKE 'tcgdex-%' AND c.card_id NOT LIKE 'pokemontcgapi-%'
+     WHERE cc.game = 'pokemon' AND c.card_id NOT LIKE 'tcgdex-%' AND c.card_id NOT LIKE 'pokemontcgapi-%' AND c.card_id NOT LIKE 'tcgplayer-%'
      GROUP BY c.card_id, c.user_id, cc.id, cc.game, cc.set_id, cc.number`);
   const decks = await db.all(`SELECT dc.card_id AS id, COUNT(*) AS n,
       cc.id AS cache_id, cc.game AS cache_game, cc.set_id AS cache_set_id, cc.number AS cache_number
       FROM deck_cards dc JOIN decks d ON d.id = dc.deck_id
       LEFT JOIN card_cache cc ON cc.id = dc.card_id
-      WHERE COALESCE(d.game, 'pokemon') = 'pokemon' AND dc.card_id NOT LIKE 'tcgdex-%' AND dc.card_id NOT LIKE 'pokemontcgapi-%'
+      WHERE COALESCE(d.game, 'pokemon') = 'pokemon' AND dc.card_id NOT LIKE 'tcgdex-%' AND dc.card_id NOT LIKE 'pokemontcgapi-%' AND dc.card_id NOT LIKE 'tcgplayer-%'
      GROUP BY dc.card_id, cc.id, cc.game, cc.set_id, cc.number`);
   const legacy = rows.filter(r => isMigrationLegacyId(r.id, r));
   const legacyDecks = decks.filter(r => isMigrationLegacyId(r.id, r));

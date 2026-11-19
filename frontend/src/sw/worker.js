@@ -1,4 +1,4 @@
-/* global SW_VERSION, PRECACHE, SHELL_FILES, OFFLINE_HEADER, shellCacheName, dataCacheName, userKeyFor, classifyRequest, isCacheableResponse, staleCaches, trimPlan, trimImagesWhenNeeded */
+/* global SW_VERSION, PRECACHE, SHELL_FILES, OFFLINE_HEADER, shellCacheName, dataCacheName, userKeyFor, classifyRequest, isCacheableResponse, staleCaches, trimPlan, shouldTrim */
 // Service worker body. Not bundled with the app: scripts/swPlugin.mjs prepends
 // SW_VERSION, PRECACHE and the rules from utils/swPolicy.js and emits the result
 // as /sw.js on a production web build. Registered by utils/registerSw.js, never
@@ -23,10 +23,6 @@ let currentData = null;
 // Sessions logged out while this worker was running. A read that was in flight
 // at logout must not recreate the cache that was just deleted.
 const loggedOut = new Set();
-// Image counts are session-scoped like the Cache Storage entries. The first
-// image write after worker startup reconciles the actual cache once; subsequent
-// writes only scan it when a full prune batch is over the cap.
-const imageCacheStates = new Map();
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
@@ -54,16 +50,10 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'logout') {
-    if (currentData) {
-      loggedOut.add(currentData);
-      imageCacheStates.delete(currentData);
-    }
+    if (currentData) loggedOut.add(currentData);
     currentData = null;
     event.waitUntil(caches.keys().then(names =>
-      Promise.all(staleCaches(names, { keepDataName: '' }).map(n => {
-        imageCacheStates.delete(n);
-        return caches.delete(n);
-      }))));
+      Promise.all(staleCaches(names, { keepDataName: '' }).map(n => caches.delete(n)))));
   }
 });
 
@@ -151,7 +141,6 @@ async function api(req) {
       // The session is gone server-side; so is its offline copy.
       loggedOut.add(name);
       currentData = null;
-      imageCacheStates.delete(name);
       caches.delete(name).catch(() => {});
     }
     return res;
@@ -176,67 +165,36 @@ async function image(req) {
     res = await fetch(req);
   }
   if (!loggedOut.has(name) && isCacheableResponse('image', meta(res))) {
-    storeImage(name, req.url, res.clone()).catch(() => {});
+    store(name, req.url, res.clone()).catch(() => {});
   }
   return res;
 }
 
-async function reconcileImages(cache) {
-  const urls = (await cache.keys())
-    .map(key => key.url)
-    .filter(url => new URL(url).origin !== self.location.origin);
-  const drop = trimPlan(urls, { origin: self.location.origin });
-  await Promise.all(drop.map(url => cache.delete(url)));
-  return urls.length - drop.length;
-}
-
-async function imageCacheState(name, cache) {
-  let state = imageCacheStates.get(name);
-  if (!state) {
-    state = { count: 0, version: 0, initialized: null, trimming: null, reconcileAgain: false };
-    state.initialized = reconcileImages(cache)
-      .then(count => { state.count = count; })
-      .catch(error => {
-        imageCacheStates.delete(name);
-        throw error;
-      });
-    imageCacheStates.set(name, state);
-  }
-  await state.initialized;
-  return state;
-}
-
-async function storeImage(name, key, response) {
-  const cache = await caches.open(name);
-  const state = await imageCacheState(name, cache);
-  if (loggedOut.has(name)) return;
-
-  await cache.put(key, response);
-  if (loggedOut.has(name)) {
-    await caches.delete(name);
-    imageCacheStates.delete(name);
-    return;
-  }
-
-  state.count += 1;
-  state.version += 1;
-  await trimImagesWhenNeeded(state, () => reconcileImages(cache));
-}
+// Writes per data cache since this worker last trimmed it (swPolicy shouldTrim).
+const writesSinceTrim = new Map();
 
 async function store(name, key, res) {
+  // A read that was in flight when its session logged out must not recreate the
+  // cache the logout just deleted. Checked again after each await, because the
+  // logout can land between them, and caches.open() alone creates the cache.
+  if (loggedOut.has(name)) return;
   const cache = await caches.open(name);
-  await cache.put(key, res);
+  if (!loggedOut.has(name)) await cache.put(key, res);
+  if (loggedOut.has(name)) {
+    await caches.delete(name);
+    return;
+  }
+  const writes = writesSinceTrim.has(name) ? writesSinceTrim.get(name) : null;
+  if (!shouldTrim(writes)) {
+    writesSinceTrim.set(name, writes + 1);
+    return;
+  }
+  writesSinceTrim.set(name, 0);
   const keys = await cache.keys();
   const drop = trimPlan(keys.map(k => k.url), { origin: self.location.origin });
   await Promise.all(drop.map(url => cache.delete(url)));
-  // Reconcile the image count only when this API write evicted an image.
-  if (drop.some(url => new URL(url).origin !== self.location.origin)) {
-    imageCacheStates.delete(name);
-  }
-  // One session's data on the device at a time.
+  // One session's data on the device at a time. A new session's first write
+  // always trims, so another account's cache goes the moment this one starts.
   const others = staleCaches(await caches.keys(), { keepDataName: name });
-  await Promise.all(others.map(n => {
-    imageCacheStates.delete(n);
-    return caches.delete(n);
-  }));
+  await Promise.all(others.map(n => caches.delete(n)));
 }

@@ -12,6 +12,11 @@
 // the weekly set refresh in server.js — and only on an install that has used
 // Riftbound at all. Startup asks RiftCodex for nothing.
 //
+// The sets RiftCodex does not have yet (Radiance, when this was written) come from
+// TCGplayer's catalogue under ids of this same shape (riftboundTcgplayer.js), and
+// every read here brings those rows up to date first. When a refresh brings one of
+// those sets, RiftCodex's rows take it over.
+//
 // CARD IDS are `riftbound-` plus the card's riftbound_id, which is its printed
 // code: set, collector number WITH the printing suffix, set size —
 // 'unl-229*-219' is the signature printing of UNL 229, 'unl-116a-219' an
@@ -35,9 +40,9 @@
 //     RiftCodex id) keeps the plain id; every other gets '~' plus its RiftCodex id.
 //
 // Printings are never merged by name: names repeat across printings by design.
-const axios = require('axios');
 const db = require('./db');
 const { parseCardRow } = require('./utils/priceHelpers');
+const { createProviderClient } = require('./utils/providerClient');
 const { parseSetList } = require('./utils/setQuery');
 const cardSearchSql = require('./utils/cardSearchSql');
 const { cacheNormalizedCards } = require('./utils/cardCache');
@@ -55,54 +60,36 @@ const MAX_PAGES = 100;
 // the whole catalogue.
 const MISS_REFRESH_MS = 60 * 60 * 1000;
 
-const { version } = require('../package.json');
-const USER_AGENT = `Bindarr/${version} (+https://github.com/thenotoriousJeremy/bindarr)`;
-
-const client = axios.create({
+// One request at a time, a short gap between them, and a pause on 429 (Retry-After,
+// else 30s) — utils/providerClient's queue. It is a free community service; a
+// catalogue refresh is ~16 requests and has all day.
+const MIN_GAP_MS = Number(process.env.RIFTCODEX_GAP_MS ?? 150);
+const riftcodex = createProviderClient({
+  name: 'riftcodex',
+  label: 'RiftCodex',
   baseURL: BASE_URL,
   timeout: 20000,
-  headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+  minGapMs: MIN_GAP_MS,
+  defaultCooldownMs: 30000,
 });
-
-// One request at a time, a short gap between them, and a pause on 429. It is a
-// free community service; a catalogue refresh is ~16 requests and has all day.
-const MIN_GAP_MS = Number(process.env.RIFTCODEX_GAP_MS ?? 150);
-let queue = Promise.resolve();
-let lastAt = 0;
-let cooldownUntil = 0;
-
-function get(path, config) {
-  const run = queue.then(async () => {
-    for (;;) {
-      const wait = Math.max(cooldownUntil - Date.now(), MIN_GAP_MS - (Date.now() - lastAt), 0);
-      if (wait <= 0) break;
-      await new Promise(r => setTimeout(r, wait));
-    }
-    lastAt = Date.now();
-    try {
-      return await client.get(path, config);
-    } catch (error) {
-      if (error.response && error.response.status === 429) {
-        const ra = parseInt(error.response.headers?.['retry-after'], 10);
-        cooldownUntil = Date.now() + (Number.isFinite(ra) ? ra * 1000 : 30000);
-        console.warn(`RiftCodex rate-limited us — pausing for ${Math.round((cooldownUntil - Date.now()) / 1000)}s.`);
-      }
-      throw error;
-    }
-  });
-  queue = run.then(() => {}, () => {});
-  return run;
-}
+const { client } = riftcodex;
+const get = (path, config) => riftcodex.get(path, config);
 
 // --- ids -----------------------------------------------------------------------
 
 const SAFE = /^[a-z0-9-]$/;
 
+// TextEncoder/TextDecoder rather than Buffer: these run on the phone too (device
+// mode bundles this module), where there is no Buffer. Same bytes, and the same
+// U+FFFD for a malformed sequence that Buffer's utf8 decoding gives.
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder('utf-8');
+
 function encodeCode(riftboundId) {
   let out = '';
   for (const ch of String(riftboundId || '').trim().toLowerCase()) {
     if (SAFE.test(ch)) out += ch;
-    else for (const byte of Buffer.from(ch, 'utf8')) out += `.${byte.toString(16).padStart(2, '0')}`;
+    else for (const byte of utf8Encoder.encode(ch)) out += `.${byte.toString(16).padStart(2, '0')}`;
   }
   return out;
 }
@@ -121,7 +108,7 @@ function decodeCode(code) {
       bytes.push(s.charCodeAt(i));
     }
   }
-  return Buffer.from(bytes).toString('utf8');
+  return utf8Decoder.decode(Uint8Array.from(bytes));
 }
 
 // The Bindarr card id for a riftbound_id, and for the non-canonical printing of a
@@ -274,6 +261,28 @@ function normalizeCatalogue(records) {
 
 // --- fetching and caching ------------------------------------------------------------
 
+// RiftCodex takes 8–11 s to answer a page of 100 (measured 2026-11-17), so the
+// client's 20 s timeout failed two catalogue refreshes in a row from CI runners.
+// A page gets a minute, and one that times out, cannot connect or answers 5xx is
+// asked again: three tries, a growing pause between them. A 4xx is not retried
+// (a 429 arms the client's own cooldown).
+const PAGE_TIMEOUT_MS = Number(process.env.RIFTCODEX_TIMEOUT_MS) || 60000;
+const PAGE_TRIES = 3;
+const RETRY_WAIT_MS = Number(process.env.RIFTCODEX_RETRY_MS ?? 2000);
+const transient = (e) => !e.response || e.response.status >= 500;
+const pause = (ms) => new Promise(r => setTimeout(r, ms));
+async function getPage(path, params) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await get(path, { params, timeout: PAGE_TIMEOUT_MS });
+    } catch (e) {
+      if (attempt >= PAGE_TRIES || !transient(e)) throw e;
+      console.warn(`RiftCodex ${path} page ${params.page}: ${e.message}; trying again (${attempt + 1} of ${PAGE_TRIES}).`);
+      await pause(RETRY_WAIT_MS * attempt);
+    }
+  }
+}
+
 // Every page of a paged RiftCodex listing. `pages` is what the API reports; when
 // it reports nothing, a short or empty page ends the walk.
 async function fetchAllPages(path) {
@@ -281,7 +290,7 @@ async function fetchAllPages(path) {
   let pages = 1;
   let total = null;
   for (let page = 1; page <= pages && page <= MAX_PAGES; page++) {
-    const { data } = await get(path, { params: { page, size: PAGE_SIZE } });
+    const { data } = await getPage(path, { page, size: PAGE_SIZE });
     if (!data || !Array.isArray(data.items)) throw new Error(`RiftCodex ${path} page ${page} is not a page of results`);
     items.push(...data.items);
     if (page === 1 && Number.isFinite(Number(data.total))) total = Number(data.total);
@@ -343,13 +352,20 @@ const FAILURE_BACKOFF_MS = 5 * 60 * 1000;
 
 // Fetch the whole catalogue and cache it. Concurrent callers share one fetch.
 function refreshCatalogue() {
-  if (refreshing) return refreshing;
+  if (refreshing) return require('./utils/backgroundWork').join(refreshing);   // on a phone, its runner may need the turn
   refreshing = (async () => {
     const sets = await fetchAllPages('/sets');
     const cards = normalizeCatalogue(await fetchAllPages('/cards'));
     if (!cards.length) throw new Error('RiftCodex returned no cards');
+    // The sets RiftCodex lacks are written from TCGplayer (riftboundTcgplayer.js).
+    // It is told which sets RiftCodex serves before these rows are cached, so none
+    // of its writes lands in one after, and a set RiftCodex has just added is handed
+    // over once they are: the ids the two share are RiftCodex's rows by then.
+    const fallback = require('./riftboundTcgplayer');
+    await fallback.noteRiftcodex(cards);
     await cacheCards(cards);
     await cacheSets(sets, cards);
+    await fallback.takeOver(cards);
     lastRefreshAt = Date.now();
     console.log(`Riftbound: cached ${cards.length} cards in ${new Set(cards.map(c => c.set_id)).size} sets from RiftCodex.`);
     return cards.length;
@@ -389,6 +405,14 @@ async function fetchAndCacheSets(force = false) {
 }
 
 // --- reading ----------------------------------------------------------------------------
+
+// The rows for the sets RiftCodex lacks, brought up to date from the TCGCSV cache
+// (riftboundTcgplayer.ensure). They are an addition: a failure here never fails the
+// read it comes before.
+const withFallback = (opts) => require('./riftboundTcgplayer').ensure(opts).catch((e) => {
+  console.warn(`Riftbound: the TCGplayer rows for sets RiftCodex lacks are unavailable: ${e.message}`);
+  return null;
+});
 
 // Set tokens as typed ('UNL', 'unl', 'Unleashed') or as stored ('riftbound-unl').
 const setTokens = (list) => list.flatMap(t => {
@@ -430,6 +454,7 @@ async function searchCards({
   }
 
   await ensureCatalogue();
+  await withFallback();
   const where = ['cc.game = ?'];
   const params = [GAME];
   const parts = [
@@ -460,6 +485,11 @@ async function getCardById(cardId) {
   const cached = await db.get(`SELECT * FROM card_cache WHERE id = ?`, [cardId]);
   if (cached) return parseCardRow(cached);
   if (!parseCardId(cardId)) return null;
+  // A card of a set RiftCodex lacks that this install has not written yet (a scan
+  // matched it from a downloaded catalog): written from the TCGCSV cache, no request.
+  await withFallback({ sync: false });
+  const written = await db.get(`SELECT * FROM card_cache WHERE id = ?`, [cardId]);
+  if (written) return parseCardRow(written);
   // The catalogue is cached whole, so an id that is not in it is either newer
   // than the last refresh or not a card at all. Refresh at most hourly for this.
   if (Date.now() - lastRefreshAt < MISS_REFRESH_MS) return null;
@@ -473,16 +503,19 @@ async function getCardById(cardId) {
   return row ? parseCardRow(row) : null;
 }
 
-// Set codes in release order, for the catalog builder's walk.
+// Set codes in release order, for the catalog builder's walk: RiftCodex's, and the
+// ones served from TCGplayer.
 async function listSetCodes() {
   await ensureCatalogue();
+  await withFallback({ waitForSync: true });
   const rows = await db.all(`SELECT id, ptcgo_code FROM sets WHERE game = ? ORDER BY release_date ASC`, [GAME]);
   return rows.map(r => String(r.ptcgo_code || r.id.slice(SET_PREFIX.length)).toLowerCase());
 }
 
-// One set's cached cards, for the catalog builder.
+// One set's cached cards, for the catalog builder and the set's listing.
 async function getCardsBySet(setCode) {
   await ensureCatalogue();
+  await withFallback({ waitForSync: true });
   const sid = `${SET_PREFIX}${String(setCode || '').toLowerCase().replace(/^riftbound-/, '')}`;
   const rows = await db.all(
     `SELECT * FROM card_cache WHERE game = ? AND LOWER(set_id) = ? ORDER BY CAST(number AS INTEGER), number`,
@@ -499,6 +532,7 @@ module.exports = {
   encodeCode,
   decodeCode,
   numberOf,
+  hasPrintingMarker,
   normalizeCard,
   normalizeCatalogue,
   displayImageUrl,

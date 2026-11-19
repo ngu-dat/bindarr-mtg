@@ -53,7 +53,7 @@ console.log('PASS: Magic and Lorcana keep sealed products and their prices, and 
 for (const categoryId of [3, 85]) {
   const products = slimResults(`/tcgplayer/${categoryId}/30/products`, raw(30));
   assert.deepStrictEqual(products, [
-    { productId: 1, name: 'A Card', number: '004/165' },
+    { productId: 1, name: 'A Card', number: '004/165', rarity: 'Rare', imageUrl: 'https://img/1.jpg' },
     ...sealedRows(30),
   ], `Pokémon category ${categoryId} keeps cards (slim) and sealed product`);
   const prices = slimResults(`/tcgplayer/${categoryId}/30/prices`, rawPrices);
@@ -61,6 +61,32 @@ for (const categoryId of [3, 85]) {
     'Pokémon keeps every priced product, sealed included; Foil has no column and is dropped');
 }
 console.log('PASS: Pokémon keeps cards and sealed product, with their prices');
+
+// Riftbound (89): Pokémon's shape, and on a card the short fields the sets RiftCodex
+// lacks are written from (riftboundTcgplayer.js); never the rules text.
+{
+  const rift = [
+    { productId: 722294, name: 'Ekko, Ingenious', imageUrl: 'https://tcgplayer-cdn.tcgplayer.com/product/722294_200w.jpg', groupId: 24819,
+      extendedData: [
+        { name: 'Rarity', displayName: 'Rarity', value: 'Rare' },
+        { name: 'Number', displayName: 'Number', value: '061/167' },
+        { name: 'Description', displayName: 'Description', value: 'When you play me, ...' },
+        { name: 'Energy Cost', displayName: 'Energy Cost', value: '3' },
+        { name: 'Card Type', displayName: 'Card Type', value: 'Champion Unit' },
+        { name: 'Domain', displayName: 'Domain', value: 'Mind' },
+        { name: 'Flavor Text', displayName: 'Flavor Text', value: '<em>Tick tock.</em>' },
+      ] },
+    { productId: 711362, name: 'Radiance - Booster Pack', imageUrl: 'https://img/b.jpg', groupId: 24819, extendedData: [] },
+  ];
+  assert.deepStrictEqual(slimResults('/tcgplayer/89/24819/products', rift), [
+    { productId: 722294, name: 'Ekko, Ingenious', number: '061/167', rarity: 'Rare',
+      ext: { 'Energy Cost': '3', 'Card Type': 'Champion Unit', Domain: 'Mind' } },
+    { productId: 711362, name: 'Radiance - Booster Pack', number: null, imageUrl: 'https://img/b.jpg', groupId: 24819 },
+  ]);
+  const plain = slimResults('/tcgplayer/3/24819/products', rift);
+  assert.ok(!('ext' in plain[0]), 'Pokémon rows are as they were');
+}
+console.log('PASS: Riftbound cards keep their card type, domain and stats, not their text');
 
 // The two card readers skip sealed rows exactly as before.
 const tcgcsv = require('../src/tcgcsvApi');

@@ -7,13 +7,13 @@ import { gameOptions, showGamePicker } from '../../utils/games';
 import CardImage from '../CardImage';
 import DeckListActions from '../DeckListActions';
 import { useT } from '../../utils/i18n';
-import { formatNames, supportsAnyPrinting } from '../../utils/deckRules';
+import { formatNames, supportsAnyPrinting, isOutsideDeck } from '../../utils/deckRules';
 import AnyPrintingField from './AnyPrintingField';
 import DeckHealth from './DeckHealth';
 import DeckStats from './DeckStats';
 import {
   newDeckDefaults, missingCopies, formatCardLocations, locationCollator,
-  DECK_CATEGORIES, cardGroup as cardGroupFor, groupOrder,
+  DECK_CATEGORIES, cardGroup as cardGroupFor, groupOrder, deckCategoryLabel, deckGroupLabel,
 } from './deckHelpers';
 
 // The open deck: its properties dialog, header and actions, the card search, the
@@ -22,7 +22,7 @@ import {
 export default function DeckEditor({
   activeDeck, deckGame, deckRules, showToast,
   deckDraft, setDeckDraft, handleSaveDeckProperties,
-  openDeck, setShowExportModal, setShowImportModal, loadDeckDetails,
+  openDeck, setShowExportModal, setShowImportModal, loadDeckDetails, onCollectionChanged,
   checkingOut, handleCheckout, handleReturn, startSimulator,
   deckSearchGame, setDeckSearchGame, searchQuery, setSearchQuery, searching, searchResults, handleSearchCards,
   savingCard, atCopyLimit, copyLimitText, handleAddCardToDeck, handleUpdateCardQty, handleToggleCommander,
@@ -33,9 +33,12 @@ export default function DeckEditor({
   const cardGroup = (card) => cardGroupFor(deckGame, card);
   const GROUP_ORDER = groupOrder(deckGame);
 
+  // `name` is the group's key (the English card type the cards are matched on);
+  // `label` is its heading.
   const deckCardGroups = activeDeck && deckCardSortBy === 'location'
     ? [{
-        name: t('collection.fLocation'),
+        name: 'location',
+        label: t('deck.locationGroup'),
         cards: [...activeDeck.cards].sort((a, b) => {
           const aLocation = deckCardLocations[a.id]?.find(location => location.location_id);
           const bLocation = deckCardLocations[b.id]?.find(location => location.location_id);
@@ -49,23 +52,48 @@ export default function DeckEditor({
       }]
     : [
         // A deck's commanders head the list, ahead of their card types.
-        ...(hasCommandZone ? [{ name: 'Commander', cards: activeDeck?.cards.filter(card => card.is_commander) || [] }] : []),
+        ...(hasCommandZone ? [{ name: 'Commander', label: deckGroupLabel(t, 'Commander'), cards: activeDeck?.cards.filter(card => card.is_commander) || [] }] : []),
         ...GROUP_ORDER.map(name => ({
           name,
+          label: deckGroupLabel(t, name),
           cards: activeDeck?.cards.filter(card => !(hasCommandZone && card.is_commander)
             && cardGroup(card).toLowerCase() === name.toLowerCase()) || []
         })),
       ];
 
-  const totalDeckCardsCount = activeDeck ? activeDeck.cards.reduce((sum, c) => sum + c.quantity, 0) : 0;
+  // Tokens kept in the list are no part of the deck's count (#184).
+  const totalDeckCardsCount = activeDeck
+    ? activeDeck.cards.reduce((sum, c) => sum + (isOutsideDeck(c, deckGame) ? 0 : c.quantity), 0)
+    : 0;
   const targetDeckCardsCount = activeDeck?.target_size || 60;
+
+  // Why "+" cannot add another copy, or null when it can. The button stays live and
+  // a click says why (DeckBuilder's handleUpdateCardQty), rather than a disabled
+  // "+" that did nothing when pressed (#184).
+  const moreBlockedBy = (card) => {
+    if (card.quantity >= (card.owned_qty || 0)) return t('deck.errOwnedLimit', { count: card.owned_qty || 0, name: displayName(card) });
+    if (atCopyLimit(card)) return copyLimitText(card);
+    return null;
+  };
+
+  // The cost a list row shows beside the name: Magic's mana value, the other
+  // games' cost. Not for lands and tokens, whose 0 says nothing.
+  const costLabel = (card) => {
+    if (card.cmc == null || card.cmc === '') return null;
+    const group = cardGroup(card);
+    if (group === 'Land' || group === 'Token' || group === 'Rune' || group === 'Battlefield') return null;
+    const value = Number(card.cmc);
+    if (!Number.isFinite(value)) return null;
+    return deckGame === 'mtg'
+      ? { text: t('deck.manaValue', { value }), title: t('deck.manaValueTitle', { value }) }
+      : { text: t('deck.costValue', { value }), title: t('deck.costValue', { value }) };
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       {/* Header */}
       {deckDraft && (
         <Modal onClose={() => setDeckDraft(null)} label={t('deck.editProperties')} closeOnBackdrop={false}
-          overlayStyle={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', background: 'rgba(0,0,0,0.7)' }}
           className="glass-panel" style={{ width: '480px', maxWidth: '100%', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h3 style={{ margin: 0 }}>{t('deck.editProperties')}</h3>
@@ -95,7 +123,7 @@ export default function DeckEditor({
               <label className="form-group" style={{ margin: 0 }}>
                 {t('deck.category')}
                 <select className="input-control" value={deckDraft.category} onChange={(event) => setDeckDraft({ ...deckDraft, category: event.target.value })}>
-                  {DECK_CATEGORIES.map(category => <option key={category} value={category}>{category}</option>)}
+                  {DECK_CATEGORIES.map(category => <option key={category} value={category}>{deckCategoryLabel(t, category)}</option>)}
                 </select>
               </label>
               <label className="form-group" style={{ margin: 0 }}>
@@ -122,28 +150,28 @@ export default function DeckEditor({
             position: 'absolute',
             top: 0, left: 0, right: 0,
             height: '4px',
-            background: 'linear-gradient(90deg, #eab308, #f59e0b, #eab308)',
+            background: 'linear-gradient(90deg, var(--accent-yellow), #f59e0b, var(--accent-yellow))',
             backgroundSize: '200% auto',
             animation: 'shimmer-gold 2s linear infinite'
           }} />
         ) : null}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <button className="btn btn-secondary btn-icon-only" onClick={() => openDeck(null)} style={{ borderRadius: '50%' }}>
+          <button type="button" className="btn btn-secondary btn-icon-only" onClick={() => openDeck(null)} style={{ borderRadius: '50%' }} aria-label={t('deck.backToDecks')} title={t('deck.backToDecks')}>
             <ChevronLeft size={16} />
           </button>
           <div>
             <h2 style={{ fontSize: '1.25rem', color: 'var(--text-strong)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               {activeDeck.name}
               <span style={{ fontSize: '0.8rem', color: totalDeckCardsCount === targetDeckCardsCount ? 'var(--type-grass)' : 'var(--accent-yellow)', fontWeight: 600 }}>
-                ({totalDeckCardsCount}/{targetDeckCardsCount} cards)
+                ({t('deck.cardsOfTarget', { total: totalDeckCardsCount, count: targetDeckCardsCount })})
               </span>
               {activeDeck.checked_out ? (
                 <span style={{
                   fontSize: '0.65rem',
                   background: 'rgba(234,179,8,0.15)',
-                  border: '1px solid rgba(234,179,8,0.4)',
-                  color: '#eab308',
+                  border: '1px solid var(--accent-yellow-glow)',
+                  color: 'var(--accent-yellow)',
                   padding: '2px 8px',
                   borderRadius: '12px',
                   fontWeight: 700,
@@ -153,14 +181,14 @@ export default function DeckEditor({
                   alignItems: 'center',
                   gap: '4px'
                 }}>
-                  🎮 In Play
+                  🎮 {t('deck.inPlayShort')}
                 </span>
               ) : null}
             </h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{activeDeck.description || 'Custom deck build.'}</p>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{activeDeck.description || t('deck.customBuild')}</p>
             {!!activeDeck.checked_out && activeDeck.checked_out_at && (
-              <p style={{ color: '#eab308', fontSize: '0.7rem', marginTop: '2px' }}>
-                Checked out since {new Date(activeDeck.checked_out_at).toLocaleString()}
+              <p style={{ color: 'var(--accent-yellow)', fontSize: '0.7rem', marginTop: '2px' }}>
+                {t('deck.checkedOutSince', { date: new Date(activeDeck.checked_out_at).toLocaleString() })}
               </p>
             )}
           </div>
@@ -188,7 +216,7 @@ export default function DeckEditor({
             style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
             title={t('deck.exportHint')}
           >
-            <Download size={14} /> Export
+            <Download size={14} /> {t('deck.export')}
           </button>
           <button
             className="btn btn-secondary"
@@ -196,18 +224,20 @@ export default function DeckEditor({
             style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
             title={t('deck.importHint')}
           >
-            <Upload size={14} /> Import
+            <Upload size={14} /> {t('deck.import')}
           </button>
-          <DeckListActions deck={activeDeck} showToast={showToast} onCollectionChanged={() => loadDeckDetails(activeDeck.id)} />
+          {/* Adding the deck's cards changes the collection the other tabs show:
+              DeckBuilder's onCollectionChanged tells App, then reloads this deck. */}
+          <DeckListActions deck={activeDeck} showToast={showToast} onCollectionChanged={onCollectionChanged || (() => loadDeckDetails(activeDeck.id))} />
           {/* Checkout / Return button */}
           {activeDeck.checked_out ? (
             <button
               className="btn btn-secondary"
               onClick={() => handleReturn(activeDeck)}
               disabled={checkingOut}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', border: '1px solid rgba(234,179,8,0.4)', color: '#eab308' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', border: '1px solid var(--accent-yellow-glow)', color: 'var(--accent-yellow)' }}
             >
-              <PackageCheck size={14} /> Return to Storage
+              <PackageCheck size={14} /> {t('deck.returnToStorage')}
             </button>
           ) : (
             <button
@@ -216,11 +246,11 @@ export default function DeckEditor({
               disabled={checkingOut}
               style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
             >
-              <LogOut size={14} /> Check Out for Play
+              <LogOut size={14} /> {t('deck.checkOutForPlay')}
             </button>
           )}
           <button className="btn btn-primary" onClick={startSimulator} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-            <Play size={14} /> Draw Simulator
+            <Play size={14} /> {t('deck.drawSimulator')}
           </button>
         </div>
       </div>
@@ -236,7 +266,7 @@ export default function DeckEditor({
           alignItems: 'center',
           gap: '0.75rem',
           fontSize: '0.85rem',
-          color: '#eab308'
+          color: 'var(--accent-yellow)'
         }}>
           <span style={{ fontSize: '1.25rem' }}>🎮</span>
           <div>
@@ -293,8 +323,8 @@ export default function DeckEditor({
                   // flex minimum, which pushed Browse past a phone's edge.
                   style={{ flex: 1, minWidth: 0 }}
                 />
-                <button type="submit" className="btn btn-primary" style={{ padding: '0.5rem 1rem' }} title={t('shared.search')}>
-                  <Search size={16} />
+                <button type="submit" className="btn btn-primary" style={{ padding: '0.5rem 1rem' }} title={t('shared.search')} aria-label={t('shared.search')}>
+                  <Search size={16} aria-hidden="true" />
                 </button>
                 <button type="button" className="btn btn-secondary" onClick={(e) => handleSearchCards(e, true)} style={{ padding: '0.5rem 0.9rem', fontSize: '0.75rem', whiteSpace: 'nowrap' }} title={t('deck.browseHint')}>
                   {t('deck.browseCollection')}
@@ -323,14 +353,14 @@ export default function DeckEditor({
                             <CardImage card={card} style={{ width: '24px', height: '33px', objectFit: 'cover', borderRadius: '2px', flexShrink: 0 }} />
                             <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1, overflow: 'hidden' }}>
                               <span style={{ fontSize: '0.8rem', color: 'var(--text-strong)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName(card)} ({card.set_name} • #{card.number})</span>
-                              <span style={{ fontSize: '0.65rem', color: isAtMaxOwned ? 'var(--accent-red)' : 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Owned: {ownedQty} | In Deck: {qtyInDeck}</span>
+                              <span style={{ fontSize: '0.65rem', color: isAtMaxOwned ? 'var(--accent-red)' : 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('deck.ownedInDeck', { owned: ownedQty, inDeck: qtyInDeck })}</span>
                             </div>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexShrink: 0 }}>
-                            <button className="btn btn-secondary btn-icon-only" style={{ padding: '0.2rem' }} onClick={() => setPreviewCard(card)} title={t('deck.previewArt')}>
+                            <button className="btn btn-secondary btn-icon-only" style={{ padding: '0.2rem' }} onClick={() => setPreviewCard(card)} title={t('deck.previewArt')} aria-label={t('deck.previewArt')}>
                               <Eye size={12} />
                             </button>
-                            <button className="btn btn-primary btn-icon-only" style={{ padding: '0.2rem' }} disabled={disabledAdd} onClick={() => handleAddCardToDeck(card)} title={isAtRuleMax ? copyLimitText(card) : isAtMaxOwned ? "Not enough owned copies" : "Add to deck"}>
+                            <button className="btn btn-primary btn-icon-only" style={{ padding: '0.2rem' }} disabled={disabledAdd} onClick={() => handleAddCardToDeck(card)} title={isAtRuleMax ? copyLimitText(card) : t(isAtMaxOwned ? 'deck.notEnoughOwned' : 'deck.addOne')} aria-label={t('deck.addOne')}>
                               <Plus size={12} />
                             </button>
                           </div>
@@ -345,24 +375,26 @@ export default function DeckEditor({
             <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                 <h3 style={{ fontSize: '1rem', color: 'var(--text-strong)', borderLeft: '3px solid var(--accent-red)', paddingLeft: '0.5rem', margin: 0 }}>
-                  Deck Cards ({totalDeckCardsCount} / {targetDeckCardsCount})
+                  {t('deck.deckCardsHeading', { total: totalDeckCardsCount, target: targetDeckCardsCount })}
                 </h3>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-glass)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'var(--surface-2)', padding: '2px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-glass)' }}>
                   <button
                     type="button"
                     className={`btn ${cardDisplayMode === 'list' ? 'btn-primary' : 'btn-secondary'}`}
                     style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
                     onClick={() => setCardDisplayMode('list')}
+                    aria-pressed={cardDisplayMode === 'list'}
                   >
-                    <List size={12} /> List
+                    <List size={12} /> {t('deck.viewList')}
                   </button>
                   <button
                     type="button"
                     className={`btn ${cardDisplayMode === 'grid' ? 'btn-primary' : 'btn-secondary'}`}
                     style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
                     onClick={() => setCardDisplayMode('grid')}
+                    aria-pressed={cardDisplayMode === 'grid'}
                   >
-                    <LayoutGrid size={12} /> Grid
+                    <LayoutGrid size={12} /> {t('deck.viewGrid')}
                   </button>
                 </div>
                 <select
@@ -380,14 +412,14 @@ export default function DeckEditor({
               {activeDeck.cards.length === 0 ? (
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', textAlign: 'center', padding: '2rem 0' }}>{t('deck.emptyDeck')}</p>
               ) : (
-                deckCardGroups.map(({ name: supertype, cards: list }) => {
+                deckCardGroups.map(({ name: supertype, label, cards: list }) => {
                   if (list.length === 0) return null;
                   const sum = list.reduce((total, c) => total + c.quantity, 0);
 
                   return (
                     <div key={supertype} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                       <h4 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-glass)', paddingBottom: '0.25rem', display: 'flex', justifyContent: 'space-between' }}>
-                        <span>{supertype}s</span>
+                        <span>{label}</span>
                         <span style={{ color: 'var(--text-strong)', fontWeight: 600 }}>{sum}</span>
                       </h4>
 
@@ -402,7 +434,14 @@ export default function DeckEditor({
                               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', minWidth: 0, flex: '1 1 10rem' }} role="button" tabIndex={0} onClick={() => setPreviewCard(card)} onKeyDown={onActivateKey(() => setPreviewCard(card))}>
                                 <CardImage card={card} style={{ width: '32px', height: '44px', objectFit: 'cover', borderRadius: '2px', flexShrink: 0 }} />
                                 <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
-                                  <div style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-strong)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName(card)}</div>
+                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.4rem', minWidth: 0 }}>
+                                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-strong)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{displayName(card)}</div>
+                                    {costLabel(card) && (
+                                      <span title={costLabel(card).title} style={{ flexShrink: 0, fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-secondary)', background: 'var(--surface-2)', border: '1px solid var(--border-glass)', borderRadius: '4px', padding: '0 4px' }}>
+                                        {costLabel(card).text}
+                                      </span>
+                                    )}
+                                  </div>
                                   <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.set_name} • #{card.number}</div>
                                   {deckCardLocations[card.id]?.length > 0 && (
                                     <div title={formatCardLocations(deckCardLocations[card.id])} style={{ display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.68rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -429,27 +468,32 @@ export default function DeckEditor({
                                     disabled={savingCard}
                                     onClick={() => handleToggleCommander(card)}
                                     title={t(card.is_commander ? 'deck.unsetCommander' : 'deck.setCommander')}
+                                    aria-label={t('deck.setCommander')}
                                     aria-pressed={!!card.is_commander}
                                   >
                                     <Crown size={12} />
                                   </button>
                                 )}
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: '4px', border: '1px solid var(--border-glass)', flexShrink: 0 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'var(--surface-2)', padding: '2px', borderRadius: '4px', border: '1px solid var(--border-glass)', flexShrink: 0 }}>
                                   <button
                                     className={`btn ${card.quantity === 1 ? 'btn-danger' : 'btn-secondary'} btn-icon-only`}
                                     style={{ width: '22px', height: '22px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                                     disabled={savingCard}
                                     onClick={() => handleUpdateCardQty(card.id, card.quantity - 1)}
                                     title={t(card.quantity === 1 ? 'deck.removeFromDeck' : 'deck.decreaseQty')}
+                                    aria-label={t(card.quantity === 1 ? 'deck.removeFromDeck' : 'deck.decreaseQty')}
                                   >
                                     {card.quantity === 1 ? <Trash2 size={11} /> : '-'}
                                   </button>
                                   <span style={{ padding: '0 0.4rem', fontSize: '0.85rem', fontWeight: 700, minWidth: '18px', textAlign: 'center', color: 'var(--text-strong)' }}>{card.quantity}</span>
                                   <button
                                     className="btn btn-secondary btn-icon-only"
-                                    style={{ width: '22px', height: '22px', padding: 0 }}
-                                    disabled={savingCard || card.quantity >= (card.owned_qty || 0) || atCopyLimit(card)}
+                                    style={{ width: '22px', height: '22px', padding: 0, opacity: moreBlockedBy(card) ? 0.45 : undefined }}
+                                    disabled={savingCard}
                                     onClick={() => handleUpdateCardQty(card.id, card.quantity + 1)}
+                                    title={moreBlockedBy(card) || t('card.quantityUp')}
+                                    aria-label={t('card.quantityUp')}
+                                    aria-disabled={moreBlockedBy(card) ? true : undefined}
                                   >
                                     +
                                   </button>
@@ -467,9 +511,8 @@ export default function DeckEditor({
                             <div key={card.id} style={{ position: 'relative', borderRadius: '6px', overflow: 'hidden', border: missingCopies(card) > 0 ? '2px solid var(--accent-red)' : '1px solid var(--border-glass)', background: missingCopies(card) > 0 ? 'rgba(127,29,29,0.16)' : 'rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column', transition: 'transform 0.15s' }}>
                               <div style={{ position: 'relative', width: '100%', aspectRatio: 0.718, cursor: 'pointer' }} role="button" tabIndex={0} onClick={() => setPreviewCard(card)} onKeyDown={onActivateKey(() => setPreviewCard(card))}>
                                 <CardImage card={card} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                <span style={{ position: 'absolute', top: '4px', right: '4px', background: 'rgba(0,0,0,0.85)', color: 'var(--accent-yellow)', fontSize: '0.75rem', fontWeight: 800, padding: '1px 6px', borderRadius: '10px', border: '1px solid var(--accent-yellow)' }}>
-                                  x{card.quantity}
-                                </span>
+                                {/* The copy count sits in the bar below, not on the art,
+                                    where it hid Magic's mana cost (#184). */}
                                 {missingCopies(card) > 0 && (
                                   <span style={{ position: 'absolute', top: '4px', left: '4px', background: 'rgba(127,29,29,0.92)', color: '#fff', fontSize: '0.65rem', fontWeight: 800, padding: '2px 5px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '2px' }} title={card.locked_decks || t('deck.unavailableCopies', { count: missingCopies(card) })}>
                                     <AlertTriangle size={10} /> {missingCopies(card)}
@@ -482,13 +525,16 @@ export default function DeckEditor({
                                 </div>
                               )}
                               <div style={{ padding: '4px', display: 'flex', justifyContent: 'center', background: 'rgba(0,0,0,0.5)' }}>
-                                <div style={{ display: 'flex', gap: '2px' }}>
-                                  <button className={`btn ${card.quantity === 1 ? 'btn-danger' : 'btn-secondary'} btn-icon-only`} style={{ width: '20px', height: '20px', fontSize: '0.7rem', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }} disabled={savingCard} onClick={() => handleUpdateCardQty(card.id, card.quantity - 1)} title={t(card.quantity === 1 ? 'deck.removeFromDeck' : 'deck.decreaseQty')}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                  <button className={`btn ${card.quantity === 1 ? 'btn-danger' : 'btn-secondary'} btn-icon-only`} style={{ width: '20px', height: '20px', fontSize: '0.7rem', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }} disabled={savingCard} onClick={() => handleUpdateCardQty(card.id, card.quantity - 1)} title={t(card.quantity === 1 ? 'deck.removeFromDeck' : 'deck.decreaseQty')} aria-label={t(card.quantity === 1 ? 'deck.removeFromDeck' : 'deck.decreaseQty')}>
                                     {card.quantity === 1 ? <Trash2 size={10} /> : '-'}
                                   </button>
-                                  <button className="btn btn-secondary btn-icon-only" style={{ width: '20px', height: '20px', fontSize: '0.7rem', padding: 0 }} disabled={savingCard || card.quantity >= (card.owned_qty || 0) || atCopyLimit(card)} onClick={() => handleUpdateCardQty(card.id, card.quantity + 1)}>+</button>
+                                  <span style={{ minWidth: '22px', textAlign: 'center', color: 'var(--accent-yellow)', fontSize: '0.75rem', fontWeight: 800 }}>
+                                    {t('deck.quantityBadge', { count: card.quantity })}
+                                  </span>
+                                  <button className="btn btn-secondary btn-icon-only" style={{ width: '20px', height: '20px', fontSize: '0.7rem', padding: 0, opacity: moreBlockedBy(card) ? 0.45 : undefined }} disabled={savingCard} onClick={() => handleUpdateCardQty(card.id, card.quantity + 1)} title={moreBlockedBy(card) || t('card.quantityUp')} aria-label={t('card.quantityUp')} aria-disabled={moreBlockedBy(card) ? true : undefined}>+</button>
                                   {hasCommandZone && (
-                                    <button className={`btn ${card.is_commander ? 'btn-primary' : 'btn-secondary'} btn-icon-only`} style={{ width: '20px', height: '20px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }} disabled={savingCard} onClick={() => handleToggleCommander(card)} title={t(card.is_commander ? 'deck.unsetCommander' : 'deck.setCommander')} aria-pressed={!!card.is_commander}>
+                                    <button className={`btn ${card.is_commander ? 'btn-primary' : 'btn-secondary'} btn-icon-only`} style={{ width: '20px', height: '20px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }} disabled={savingCard} onClick={() => handleToggleCommander(card)} title={t(card.is_commander ? 'deck.unsetCommander' : 'deck.setCommander')} aria-label={t('deck.setCommander')} aria-pressed={!!card.is_commander}>
                                       <Crown size={10} />
                                     </button>
                                   )}

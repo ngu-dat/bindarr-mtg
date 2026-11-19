@@ -1,10 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, memo } from 'react';
 import { Shield, UserPlus, Key, Trash2, ToggleLeft, ToggleRight, Search, Users, HardDriveDownload, Download, Sparkles } from 'lucide-react';
 import AdminMetricsPanel from './AdminMetricsPanel';
 import Modal from './Modal';
 import CatalogPanel from './CatalogPanel';
 import InstanceSettings from './InstanceSettings';
-import SetupWizard from './SetupWizard';
 import PokemonMigrationBanner from './PokemonMigrationBanner';
 import { currencySymbol } from '../utils/formatPrice';
 import { saveFile } from '../utils/saveFile';
@@ -17,12 +16,13 @@ const formatBytes = (n) => {
   return `${(n / Math.pow(1024, i)).toFixed(i ? 1 : 0)} ${u[i]}`;
 };
 
-function AdminPanel({ user, onUpdateUser, showToast }) {
+// onRunSetup opens App's setup wizard. Admin used to draw a wizard of its own, and
+// App's opened over it as soon as a key was saved in it.
+function AdminPanel({ showToast, onRunSetup }) {
   const { t, locale } = useT();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filterText, setFilterText] = useState('');
-  const [showWizard, setShowWizard] = useState(false);
 
   // Add User Form States
   const [newUsername, setNewUsername] = useState('');
@@ -303,14 +303,6 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
   );
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      {showWizard && (
-        <SetupWizard 
-          user={user} 
-          onUpdateUser={onUpdateUser} 
-          showToast={showToast} 
-          onClose={() => setShowWizard(false)} 
-        />
-      )}
       {/* Header Info */}
       <div className="glass-panel" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
@@ -318,15 +310,17 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{t('admin.subtitle')}</p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          {onRunSetup && (
           <button 
             type="button" 
             className="btn btn-secondary btn-sm" 
-            onClick={() => setShowWizard(true)}
+            onClick={onRunSetup}
             style={{ padding: '0.5rem 1rem', height: '34px', fontSize: '0.8rem', border: '1px solid var(--border-glass)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
           >
             <Sparkles size={14} style={{ color: 'var(--accent-yellow)' }} />
             {t('admin.runSetupWizard')}
           </button>
+          )}
 
           <button 
             type="button" 
@@ -454,6 +448,7 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
                           type="button"
                           className="btn btn-secondary btn-icon-only"
                           title={t('admin.downloadBackup')}
+                          aria-label={t('admin.downloadBackup')}
                           onClick={() => handleDownloadBackup(b.file)}
                         >
                           <Download size={14} />
@@ -532,28 +527,31 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
                       </td>
                       <td style={{ fontWeight: 600 }}>{t('admin.userCards', { count: user.total_cards })}</td>
                       <td style={{ fontWeight: 700, color: 'var(--accent-yellow)' }}>
-                        {currencySymbol()}{(user.total_value || 0).toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {currencySymbol(user.value_currency)}{(user.total_value || 0).toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td>
                         <div style={{ display: 'flex', gap: '0.35rem' }}>
                           <button 
-                            className="btn btn-secondary btn-icon-only" 
+                            className="btn btn-secondary btn-icon-only"
                             title={t('admin.toggleRole')}
+                            aria-label={t('admin.toggleRole')}
                             onClick={() => handleToggleRole(user)}
                             disabled={user.username === 'admin'}
                           >
                             {user.role === 'admin' ? <ToggleRight size={14} style={{ color: 'var(--accent-red)' }} /> : <ToggleLeft size={14} />}
                           </button>
                           <button 
-                            className="btn btn-secondary btn-icon-only" 
+                            className="btn btn-secondary btn-icon-only"
                             title={t('admin.resetPassword')}
+                            aria-label={t('admin.resetPassword')}
                             onClick={() => setTargetUser(user)}
                           >
                             <Key size={14} style={{ color: 'var(--accent-yellow)' }} />
                           </button>
                           <button 
-                            className="btn btn-danger btn-icon-only" 
+                            className="btn btn-danger btn-icon-only"
                             title={t('admin.deleteAccount')}
+                            aria-label={t('admin.deleteAccount')}
                             onClick={() => handleDeleteUser(user)}
                             disabled={user.username === 'admin'}
                           >
@@ -579,16 +577,7 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
 
       {/* Change Password Dialog Overlay */}
       {targetUser && (
-        <Modal onClose={() => { setTargetUser(null); setUpdatePassword(''); }} label={t('admin.resetPassword')} dirty={!!updatePassword} closeOnBackdrop={false} overlayStyle={{
-          position: 'fixed',
-          top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.6)',
-          backdropFilter: 'blur(4px)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 999
-        }} className="glass-panel" style={{ maxWidth: '380px', width: '100%', maxHeight: '90vh', overflowY: 'auto', overscrollBehavior: 'contain', padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <Modal onClose={() => { setTargetUser(null); setUpdatePassword(''); }} label={t('admin.resetPassword')} dirty={!!updatePassword} closeOnBackdrop={false} className="glass-panel" style={{ maxWidth: '380px', width: '100%', maxHeight: '90vh', overflowY: 'auto', overscrollBehavior: 'contain', padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             <div>
               <h3 style={{ color: 'var(--text-strong)', fontSize: '1.1rem' }}>{t('admin.resetPassword')}</h3>
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>{t('admin.resetPasswordFor')} <strong>{targetUser.username}</strong></p>
@@ -626,4 +615,5 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
   );
 }
 
-export default AdminPanel;
+// Memoized: App re-renders on every toast, and its props here are stable.
+export default memo(AdminPanel);

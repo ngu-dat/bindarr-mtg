@@ -63,8 +63,12 @@ let srv;
 let admin;
 const ids = {};
 const results = [];
+// Logout ends the session it is sent with, so each of its cases gets its own,
+// made before the server starts like every other row this suite writes itself.
+const freshSessions = [];
 
-async function setup() {
+// Accounts, sessions and cards, straight into the file before the server opens it.
+async function seed() {
   admin = await harness.admin(db);
   ids.target = (await harness.member(db, 'mf-target')).id;
   for (const id of ['mf-card-1', 'mf-card-2']) {
@@ -74,6 +78,11 @@ async function setup() {
       [id, `Card ${id}`]
     );
   }
+  for (let i = 0; i < BODY_CASES.length; i++) freshSessions.push(await harness.sessionHeaders(db, admin.id));
+}
+
+// Everything else through the API, once the server is up.
+async function setup() {
   const call = async (method, url, body) => {
     const res = await srv.request(method, url, { as: admin, body });
     assert.ok(res.status >= 200 && res.status < 300, `setup ${method} ${url}: ${res.status} ${res.text.slice(0, 200)}`);
@@ -139,7 +148,7 @@ function routes() {
     { method: 'POST', path: '/api/import-container', base: { name: 'MF Import', data: '1 Card (abc) 1' }, required: true, fields: ['data', 'name'], variants: SHORT_VARIANTS.slice(0, 3), bodyCases: ['empty object'] },
     // settings.js (admin)
     { method: 'PUT', path: '/api/settings',
-      fields: ['public_base_url', 'pokemon_provider', 'mtg_price_source', 'price_refresh_days', 'scan_exclude_tokens', 'scan_exclude_art_cards', 'scan_exclude_jumpstart', 'scan_exclude_promos', 'scan_exclude_digital', 'setup_complete'] },
+      fields: ['public_base_url', 'pokemon_provider', 'mtg_price_source', 'price_refresh_days', 'scan_exclude_tokens', 'scan_exclude_art_cards', 'scan_exclude_jumpstart', 'scan_exclude_promos', 'scan_exclude_digital', 'setup_complete', 'setup_step'] },
     // auth.js, the authenticated half
     { method: 'PUT', path: '/api/auth/settings', base: { current_password: 'wrong-password' },
       fields: ['current_password', 'password', 'share_enabled', 'share_locations', 'regenerate_share_token', 'tcg_api_key', 'psa_api_token', 'graded_price_api_key'] },
@@ -197,8 +206,13 @@ function withUniqueBase(route) {
   return base;
 }
 
+function freshSession() {
+  if (!freshSessions.length) throw new Error('out of fresh sessions: seed() makes one per case of a freshSession route');
+  return { headers: freshSessions.shift() };
+}
+
 async function send(route, label, body) {
-  const as = route.freshSession ? { headers: await harness.sessionHeaders(db, admin.id) } : admin;
+  const as = route.freshSession ? freshSession() : admin;
   const res = await srv.request(route.method, route.path, { as, body, timeoutMs: 10000 });
   const record = { route: `${route.method} ${route.label || route.path}`, label, status: res.status, error: res.error, text: res.text.slice(0, 160) };
   results.push(record);
@@ -236,6 +250,8 @@ async function sweep(route) {
 }
 
 async function runTests() {
+  await harness.prepare(db);
+  await seed();
   srv = await harness.startServer(tmp);
   await setup();
 

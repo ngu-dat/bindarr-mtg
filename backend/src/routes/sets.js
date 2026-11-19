@@ -3,6 +3,28 @@ const db = require('../db');
 const languages = require('../utils/languages');
 const router = express.Router();
 
+// Display names for the provider the `sets` table follows, for the Browse view's
+// "TCGplayer lists N sets that TCGdex hasn't published yet".
+const PROVIDER_NAMES = { tcgdex: 'TCGdex', pokemontcg: 'pokemontcg.io', pokemontcgapi: 'pokemontcgapi.com' };
+
+// GET /api/sets/tcgplayer-unpublished?game=pokemon — Pokémon sets TCGplayer
+// already lists that the configured provider has not published yet
+// (tcgplayerCatalog.unpublishedSets). Read from the local TCGCSV cache, so it
+// costs no request. Other games: an empty list — their providers publish a
+// set ahead of its release, and TCGCSV is synced for their sealed product only.
+router.get('/tcgplayer-unpublished', async (req, res) => {
+  try {
+    const game = req.query.game || 'pokemon';
+    if (game !== 'pokemon') return res.json({ game, provider: null, count: 0, groups: [] });
+    const provider = await require('../utils/pokemonProvider').providerFor('en');
+    const groups = await require('../tcgplayerCatalog').unpublishedSets();
+    res.json({ game, provider: PROVIDER_NAMES[provider] || provider, count: groups.length, groups });
+  } catch (error) {
+    console.error('Error listing unpublished sets:', error.message);
+    res.status(500).json({ error: 'Failed to list unpublished sets' });
+  }
+});
+
 router.get('/', async (req, res) => {
   try {
     const { game, lang } = req.query;
@@ -14,7 +36,12 @@ router.get('/', async (req, res) => {
     // alone while the same id exists in several languages. Ask TCGdex instead.
     if (game === 'pokemon' && !languages.isEnglish(lang)) {
       try {
-        return res.json(await require('../tcgdexApi').listSets(lang));
+        // Plus the sets TCGdex does not serve in this language, from TCGplayer
+        // (Japanese: most of them). English ones are in the `sets` table already.
+        // Brought up to date in the background; this list is what is cached now.
+        const fallback = require('../pokemonTcgplayer');
+        fallback.ensure(lang).catch(() => {});
+        return res.json([...await require('../tcgdexApi').listSets(lang), ...await fallback.fallbackSets(lang)]);
       } catch (err) {
         console.error(`Failed to fetch ${lang} Pokémon sets from TCGdex:`, err.message);
         return res.json([]); // set autocomplete is a convenience; searching still works
@@ -23,7 +50,26 @@ router.get('/', async (req, res) => {
     // Riftbound's sets arrive with its catalogue, which is fetched on first use —
     // opening the Riftbound search is a first use. Unreachable is not an error
     // here: the list is a convenience and searching still says what is wrong.
-    if (game === 'riftbound') await require('../riftcodexApi').ensureCatalogue().catch(() => {});
+    // Then the sets RiftCodex lacks, written from the TCGCSV cache
+    // (riftboundTcgplayer.js); a sync that has to bring them is not waited for.
+    if (game === 'riftbound') {
+      await require('../riftcodexApi').ensureCatalogue().catch(() => {});
+      await require('../riftboundTcgplayer').ensure().catch(() => {});
+    }
+    // English Pokémon sets TCGdex lacks (World Championship decks, Prize Pack...)
+    // are written into `sets` from TCGplayer, in the background: this list is
+    // what is cached now, and opening Add Cards never waits on a download.
+    if (game === 'pokemon') require('../pokemonTcgplayer').ensure('English').catch(() => {});
+    // The TCGplayer-catalogue games build their set list from TCGCSV on first use.
+    // On a phone that runs in the background, and the list below is what is cached
+    // meanwhile; X-Catalogue-Pending tells the app to ask again (CardSearch).
+    if (require('../tcgcsvGameApi').isTcgcsvGame(game)) {
+      const catalogue = await require('../tcgcsvGameApi').ensureCatalogue(game).catch(() => null);
+      if (catalogue && catalogue.pending) {
+        res.set('X-Catalogue-Pending', '1');
+        res.set('Access-Control-Expose-Headers', 'X-Catalogue-Pending');
+      }
+    }
     const where = game ? `WHERE game = ?` : '';
     const params = game ? [game] : [];
     const sets = await db.all(`
